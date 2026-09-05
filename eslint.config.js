@@ -24,7 +24,7 @@ export default [
     },
   },
   {
-    files: ['tests/**/*.js', '*.config.js'],
+    files: ['tests/**/*.js', 'scripts/*.{js,mjs}', '*.config.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -32,5 +32,9 @@ export default [
         ...globals.node,
       },
     },
+  },
+  {
+    files: ['scripts/smoke-export.mjs'],
+    languageOptions: { globals: globals.browser },
   },
 ];

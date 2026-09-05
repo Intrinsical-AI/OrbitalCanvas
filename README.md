@@ -18,7 +18,7 @@ Inspired by [Geometría Aurea](https://instagram.com/geometria_aurea/).
 ## Quick start
 
 ```bash
-npm install
+npm ci
 npm run dev      # http://localhost:5173
 ```
 
@@ -33,6 +33,12 @@ npm run dev      # http://localhost:5173
 
 The demo needs a build step now; `python3 -m http.server` no longer serves the sources
 directly. After `npm run build` you can serve `dist/` with any static server.
+
+Build installs must include development dependencies. `npm ci` runs a version guard and
+`patch-package --error-on-fail` to apply the tracked Mediabunny **1.51.0** cleanup patch.
+Do not skip install scripts. Changing this exact pin requires reviewing the patch and
+rerunning the real dependency and browser regressions below. Published `dist/` contains
+the patched exporter and needs no package installation on the static host.
 
 ## Interface
 
@@ -101,6 +107,12 @@ playback shortcuts are locked during export; the record button and Escape still 
 After success, cancellation or failure, controls and the prior playing/paused state are
 restored. Capture tracks and animation callbacks are released on failure too. Destroying
 the app cancels its export without restarting the animation.
+
+The tracked patch covers the TypeScript source and the ESM module used by this app.
+When finalization fails, it directly attempts forced source cleanup before propagating
+the original error. If cleanup also fails, its error is logged separately and the source
+is not marked closed. This guarantee concerns our `BufferTarget` path; it does not extend
+to arbitrary file/stream targets or cancellation throughout Mediabunny's finalizing state.
 
 ## Architecture
 
@@ -186,6 +198,25 @@ config unit conversion, renderer draw calls and video-export failure paths. Nota
 
 Browser acceptance also checks downloaded video, control locking, resize cancellation and
 the app lifecycle. The unit doubles do not prove that a particular browser can encode a codec.
+
+`tests/mediabunny-cleanup.test.js` imports the installed dependency and replaces only native
+resources to exercise color/alpha flush failures, prior encoder errors and cleanup failures.
+It checks error identity and resource closure across success, cancellation and repeated close.
+
+For real browser acceptance, build first and run:
+
+```bash
+npm run build
+npm run smoke:export
+```
+
+The smoke reuses this workspace's Python Lair Playwright/Chromium installation. Elsewhere,
+set `PLAYWRIGHT_MODULE` to an installed `@playwright/test` module path and install its Chromium;
+`ffprobe` and `ffmpeg` must be on PATH. No browser dependency is added to this package.
+Exports from `dist/` verify failed-finalize recovery, the next successful 60-frame clip,
+MediaRecorder motion and capture cleanup, control locking, cancellation and resize.
+The destroy probe uses a local Vite source server to inspect the real App instance.
+Downloaded clips and a JSON summary are kept in the printed temporary directory.
 
 ## License
 

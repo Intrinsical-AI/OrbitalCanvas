@@ -1,0 +1,54 @@
+diff --git a/node_modules/mediabunny/src/media-source.ts b/node_modules/mediabunny/src/media-source.ts
+--- a/node_modules/mediabunny/src/media-source.ts
++++ b/node_modules/mediabunny/src/media-source.ts
+@@ -147,8 +147,20 @@
+ 	/** @internal */
+ 	async _flushOrWaitForOngoingClose(forceClose: boolean) {
+ 		return this._closingPromise ??= (async () => {
+-			await this._flushAndClose(forceClose);
+-			this._closed = true;
++			try {
++				await this._flushAndClose(forceClose);
++				this._closed = true;
++			} catch (error) {
++				if (!forceClose) {
++					try {
++						await this._flushAndClose(true);
++						this._closed = true;
++					} catch (cleanupError) {
++						console.error('Mediabunny source cleanup failed after finalization error:', cleanupError);
++					}
++				}
++				throw error;
++			}
+ 		})();
+ 	}
+ }
+diff --git a/node_modules/mediabunny/dist/modules/src/media-source.js b/node_modules/mediabunny/dist/modules/src/media-source.js
+--- a/node_modules/mediabunny/dist/modules/src/media-source.js
++++ b/node_modules/mediabunny/dist/modules/src/media-source.js
+@@ -82,8 +82,22 @@
+     /** @internal */
+     async _flushOrWaitForOngoingClose(forceClose) {
+         return this._closingPromise ??= (async () => {
+-            await this._flushAndClose(forceClose);
+-            this._closed = true;
++            try {
++                await this._flushAndClose(forceClose);
++                this._closed = true;
++            }
++            catch (error) {
++                if (!forceClose) {
++                    try {
++                        await this._flushAndClose(true);
++                        this._closed = true;
++                    }
++                    catch (cleanupError) {
++                        console.error('Mediabunny source cleanup failed after finalization error:', cleanupError);
++                    }
++                }
++                throw error;
++            }
+         })();
+     }
+ }
