@@ -1,0 +1,35 @@
+{
+  "name": "orbital-canvas",
+  "version": "1.0.0",
+  "description": "Generative particle animation on a 3D orbital scene, rendered to canvas with switchable 3D and top-down 2D projections.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrCabss69/OrbitalCanvas.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@fontsource-variable/inter-tight": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "mediabunny": "^1.51.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.0",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "vite": "^7.1.12",
+    "vitest": "^3.2.4"
+  }
+}
