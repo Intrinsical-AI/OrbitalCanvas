@@ -52,3 +52,125 @@ diff --git a/node_modules/mediabunny/dist/modules/src/media-source.js b/node_mod
          })();
      }
  }
+diff --git a/node_modules/mediabunny/src/encode.ts b/node_modules/mediabunny/src/encode.ts
+--- a/node_modules/mediabunny/src/encode.ts
++++ b/node_modules/mediabunny/src/encode.ts
+@@ -744,27 +744,31 @@
+-			// eslint-disable-next-line @typescript-eslint/no-misused-promises, no-async-promise-executor
+-			return new Promise<boolean>(async (resolve) => {
+-				try {
+-					const encoder = new VideoEncoder({
+-						output: () => {},
+-						error: () => resolve(false),
+-					});
+-					encoder.configure(encoderConfig);
+-
+-					const frameData = new Uint8Array(width * height * 4);
+-					const frame = new VideoFrame(frameData, {
+-						format: 'RGBA',
+-						codedWidth: width,
+-						codedHeight: height,
+-						timestamp: 0,
+-					});
+-
+-					encoder.encode(frame);
+-					frame.close();
+-
+-					await encoder.flush();
+-
+-					resolve(true);
+-				} catch {
+-					resolve(false);
+-				}
+-			});
++			let encoder: VideoEncoder | null = null;
++			let encodingError = false;
++			try {
++				encoder = new VideoEncoder({
++					output: () => {},
++					error: () => { encodingError = true; },
++				});
++				encoder.configure(encoderConfig);
++
++				const frameData = new Uint8Array(width * height * 4);
++				const frame = new VideoFrame(frameData, {
++					format: 'RGBA',
++					codedWidth: width,
++					codedHeight: height,
++					timestamp: 0,
++				});
++
++				try {
++					encoder.encode(frame);
++				} finally {
++					frame.close();
++				}
++				await encoder.flush();
++				return !encodingError;
++			} catch {
++				return false;
++			} finally {
++				if (encoder && encoder.state !== 'closed') {
++					encoder.close();
++				}
++			}
+diff --git a/node_modules/mediabunny/dist/modules/src/encode.js b/node_modules/mediabunny/dist/modules/src/encode.js
+--- a/node_modules/mediabunny/dist/modules/src/encode.js
++++ b/node_modules/mediabunny/dist/modules/src/encode.js
+@@ -384,24 +384,32 @@
+-            // eslint-disable-next-line @typescript-eslint/no-misused-promises, no-async-promise-executor
+-            return new Promise(async (resolve) => {
+-                try {
+-                    const encoder = new VideoEncoder({
+-                        output: () => { },
+-                        error: () => resolve(false),
+-                    });
+-                    encoder.configure(encoderConfig);
+-                    const frameData = new Uint8Array(width * height * 4);
+-                    const frame = new VideoFrame(frameData, {
+-                        format: 'RGBA',
+-                        codedWidth: width,
+-                        codedHeight: height,
+-                        timestamp: 0,
+-                    });
+-                    encoder.encode(frame);
+-                    frame.close();
+-                    await encoder.flush();
+-                    resolve(true);
+-                }
+-                catch {
+-                    resolve(false);
+-                }
+-            });
++            let encoder = null;
++            let encodingError = false;
++            try {
++                encoder = new VideoEncoder({
++                    output: () => { },
++                    error: () => { encodingError = true; },
++                });
++                encoder.configure(encoderConfig);
++                const frameData = new Uint8Array(width * height * 4);
++                const frame = new VideoFrame(frameData, {
++                    format: 'RGBA',
++                    codedWidth: width,
++                    codedHeight: height,
++                    timestamp: 0,
++                });
++                try {
++                    encoder.encode(frame);
++                }
++                finally {
++                    frame.close();
++                }
++                await encoder.flush();
++                return !encodingError;
++            }
++            catch {
++                return false;
++            }
++            finally {
++                if (encoder && encoder.state !== 'closed') {
++                    encoder.close();
++                }
++            }

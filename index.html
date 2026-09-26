@@ -29,7 +29,7 @@
       <div class="hud__zone hud__zone--tl">
         <div class="mark">
           <span class="mark__name">Orbital Canvas</span>
-          <span class="mark__meta" id="markMeta">Euclidean · perspective</span>
+          <span class="mark__meta" id="markMeta">euclidean · perspective</span>
         </div>
       </div>
 
@@ -146,7 +146,7 @@
             class="btn btn--icon"
             id="playButton"
             data-state="playing"
-            aria-label="Pause"
+            aria-label="Pause animation"
             title="Pause (Space)"
           >
             <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true">
@@ -303,7 +303,7 @@
            rate with no explanation. This is the closed-drawer half of that signal. -->
       <p class="notice" id="budgetNotice" role="status" aria-live="polite" hidden></p>
       <p class="status" id="statusLine" role="status" aria-live="polite"></p>
-      <p class="hint" id="hintLine">Drag or arrow keys to orbit · scroll to zoom</p>
+      <p class="hint">Drag or arrow keys to orbit · scroll to zoom</p>
     </div>
 
     <!-- ===== Parameter drawer ===== -->
@@ -353,8 +353,8 @@
             </button>
           </div>
           <p class="group__note">
-            Safe keeps the scene fluent. Experimental opens wider creative ranges and may reduce
-            frame rate.
+            Safe reserves room for fading rings. Experimental opens wider creative ranges and may
+            reduce frame rate.
           </p>
         </section>
 
@@ -375,9 +375,7 @@
           </p>
         </section>
 
-        <!-- `Controls` generates one `.group` section per entry in `SECTIONS`; the container
-             is `display: contents` so those land as siblings of the sections above and share
-             their spacing rules. -->
+        <!-- `Controls` generates the parameter sections here. -->
         <div id="controlsPanel"></div>
       </div>
 
@@ -439,7 +437,7 @@
             <dd><kbd>P</kbd></dd>
           </div>
           <div class="sheet__row">
-            <dt>Undo randomise / reset</dt>
+            <dt>Undo preset / randomise / reset</dt>
             <dd><kbd>Ctrl</kbd><kbd>Z</kbd></dd>
           </div>
           <div class="sheet__row">

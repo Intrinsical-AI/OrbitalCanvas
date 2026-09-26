@@ -16,23 +16,25 @@
  * @property {string} id
  * @property {boolean} sortsByDepth
  * @property {(viewport: {width: number, height: number}, fitRadius: number) => void} configure
- * @property {(p: import('../core/vec3.js').Vec3, out: Projected) => Projected} project
+ * @property {(p: import('../core/geometry/euclidean.js').Vec3, out: Projected) => Projected} project
  */
 
 /** Fraction of the viewport left as breathing room around the outermost ring. */
 const FIT_MARGIN = 1.12;
 
 /**
- * Uniform world-to-screen scale that fits a sphere of `fitRadius` into the viewport.
+ * Centre the origin in the viewport and set the uniform world-to-screen scale that fits a
+ * sphere of `fitRadius` into it.
  *
+ * @param {{scale: number, cx: number, cy: number}} projector
  * @param {{width: number, height: number}} viewport CSS pixels.
  * @param {number} fitRadius World units.
- * @returns {number}
  */
-function fitScale(viewport, fitRadius) {
+function fitToViewport(projector, viewport, fitRadius) {
   const shortest = Math.min(viewport.width, viewport.height);
-  const radius = Math.max(fitRadius, 1);
-  return shortest / (2 * radius * FIT_MARGIN);
+  projector.scale = shortest / (2 * Math.max(fitRadius, 1) * FIT_MARGIN);
+  projector.cx = viewport.width / 2;
+  projector.cy = viewport.height / 2;
 }
 
 /**
@@ -63,9 +65,7 @@ export class TopOrthoProjector {
   }
 
   configure(viewport, fitRadius) {
-    this.scale = fitScale(viewport, fitRadius);
-    this.cx = viewport.width / 2;
-    this.cy = viewport.height / 2;
+    fitToViewport(this, viewport, fitRadius);
   }
 
   project(p, out) {
@@ -102,13 +102,11 @@ export class PerspectiveProjector {
   }
 
   configure(viewport, fitRadius) {
-    this.scale = fitScale(viewport, fitRadius);
-    this.cx = viewport.width / 2;
-    this.cy = viewport.height / 2;
+    fitToViewport(this, viewport, fitRadius);
   }
 
   project(p, out) {
-    const c = this.camera.toCameraSpaceInto(p, this.cameraPoint);
+    const c = this.camera.toCameraSpace(p, this.cameraPoint);
     const eyeDistance = this.camera.distance - c.z;
 
     if (eyeDistance <= this.near) {
@@ -120,7 +118,7 @@ export class PerspectiveProjector {
       return out;
     }
 
-    const w = this.camera.distance / eyeDistance;
+    const w = this.camera.focalLength / eyeDistance;
     out.sx = this.cx + c.x * w * this.scale;
     out.sy = this.cy - c.y * w * this.scale;
     out.scale = w;

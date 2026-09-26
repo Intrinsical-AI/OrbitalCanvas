@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   clamp,
   CONTROLS,
-  createConfig,
   DEFAULTS,
   EXPORT_LIMITS,
   formatValue,
   PRESETS,
+  presetValues,
   randomValue,
   RANGE_MODES,
   REBUILD_KEYS,
@@ -15,9 +15,8 @@ import {
   snapToStep,
   toDisplay,
   toInternal,
-  validateControls,
-  validatePresets,
 } from '../src/core/config.js';
+import { validateControls, validatePresets } from './spec-checks.js';
 
 describe('control specification', () => {
   it('is internally consistent', () => {
@@ -25,10 +24,11 @@ describe('control specification', () => {
   });
 
   it('reports every problem it finds, not just the first', () => {
-    const problems = validateControls({ getElementById: () => null });
+    const bad = CONTROLS.map((spec) => ({ ...spec, key: `${spec.key}Missing` }));
+    const problems = validateControls(bad);
     expect(problems).toHaveLength(CONTROLS.length);
     for (const problem of problems) {
-      expect(problem).toMatch(/has no matching element/);
+      expect(problem).toMatch(/targets unknown config key/);
     }
   });
 
@@ -68,7 +68,7 @@ describe('control specification', () => {
     // Guards the guard: the section check has to actually fire, or a typo'd section id would
     // silently drop the control out of the drawer entirely.
     const bad = { ...CONTROLS[0], section: 'nowhere' };
-    const problems = validateControls(undefined, [bad]);
+    const problems = validateControls([bad]);
     expect(problems).toContainEqual(expect.stringMatching(/unknown section "nowhere"/));
   });
 
@@ -117,6 +117,29 @@ describe('presets', () => {
     }
   });
 
+  it('produce the same controls whatever was applied before', () => {
+    // Applying Weave and then Armature used to keep Weave's lineWidth, which Armature omits.
+    const byId = (id) => PRESETS.find((p) => p.id === id);
+    const fromDefaults = { ...DEFAULTS, ...presetValues(byId('armature')) };
+    const afterWeave = {
+      ...DEFAULTS,
+      ...presetValues(byId('weave')),
+      ...presetValues(byId('armature')),
+    };
+    expect(afterWeave).toEqual(fromDefaults);
+    expect(fromDefaults.lineWidth).toBe(DEFAULTS.lineWidth);
+  });
+
+  it('cover every control except the auto-orbit motion preference', () => {
+    const keys = Object.keys(presetValues(PRESETS[0]));
+    expect(keys.sort()).toEqual(
+      CONTROLS.map((spec) => spec.key)
+        .filter((key) => key !== 'autoOrbit')
+        .sort()
+    );
+    expect(presetValues(PRESETS.find((p) => p.id === 'default'))).not.toHaveProperty('autoOrbit');
+  });
+
   it('each produce a configuration distinct from the defaults', () => {
     for (const preset of PRESETS.filter((p) => p.id !== 'default')) {
       const differs = Object.entries(preset.values).some(([key, value]) => DEFAULTS[key] !== value);
@@ -125,19 +148,9 @@ describe('presets', () => {
   });
 });
 
-describe('createConfig', () => {
-  it('returns a mutable copy, leaving DEFAULTS frozen', () => {
-    const config = createConfig();
-    config.speed = 99;
-    expect(DEFAULTS.speed).not.toBe(99);
-    expect(() => {
-      'use strict';
-      DEFAULTS.speed = 99;
-    }).toThrow();
-  });
-
-  it('applies overrides', () => {
-    expect(createConfig({ numPoints: 5 }).numPoints).toBe(5);
+describe('DEFAULTS', () => {
+  it('is frozen', () => {
+    expect(Object.isFrozen(DEFAULTS)).toBe(true);
   });
 });
 
@@ -242,6 +255,12 @@ describe('formatValue', () => {
   });
 
   it('renders colours, checkboxes and selects readably', () => {
+    expect(
+      formatValue(
+        CONTROLS.find((c) => c.type === 'color'),
+        'auto'
+      )
+    ).toBe('Auto');
     expect(
       formatValue(
         CONTROLS.find((c) => c.type === 'color'),

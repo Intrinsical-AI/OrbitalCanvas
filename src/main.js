@@ -1,30 +1,25 @@
 import './styles.css';
 
 import {
-  CONTROLS,
   DEFAULTS,
   EXPORT_DEFAULTS,
   EXPORT_LIMITS,
   PRESETS,
   clamp,
+  presetValues,
 } from './core/config.js';
 import { PARTICLE_BUDGET, Scene } from './core/scene.js';
 import { Camera } from './view/camera.js';
 import { createProjector } from './view/projectors.js';
 import { Renderer } from './view/renderer.js';
-import { Viewport } from './view/viewport.js';
-import { bindSegmented, Controls } from './ui/controls.js';
+import { currentDpr, Viewport } from './view/viewport.js';
+import { applyBounds, bindSegmented, Controls } from './ui/controls.js';
 import { encodeConfig, initialConfig, storeConfig } from './ui/permalink.js';
-import { Recorder } from './ui/recorder.js';
+import { download, Recorder, timestamp } from './ui/recorder.js';
 import { Theme } from './ui/theme.js';
-
-const VIEW_STORAGE_KEY = 'orbital-canvas:view';
 
 /** Below this width the parameter drawer covers the artwork, so it becomes a modal dialog. */
 const WIDE_VIEWPORT = '(min-width: 1024px)';
-
-/** Debounce for persisting the configuration; a slider drag emits far faster than this. */
-const PERSIST_AFTER = 400;
 
 /**
  * Composition root.
@@ -43,23 +38,14 @@ class App {
     this.exporting = false;
     this.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-    /**
-     * True once the user has picked a particle colour of their own. Until then the default
-     * tracks the theme, because a fixed white default is invisible on a white canvas.
-     */
-    this.colorIsCustom = false;
-    this.theme = new Theme((theme) => this.#onThemeChange(theme));
+    this.theme = new Theme();
 
     // URL hash beats the stored session beats the defaults. Every value has already been
     // snapped and clamped by `decodeConfig`, so a hand-edited hash cannot get us here with an
     // out-of-range scene.
     const boot = initialConfig(window.location);
-    // A colour that arrived in the link or the stored session is a colour the user chose, so
-    // it must not be overwritten by the theme-tracking default.
-    if ('color' in boot.values) this.colorIsCustom = true;
-
     this.scene = new Scene({
-      view: initialView(doc, boot.meta),
+      view: boot.meta.view ?? DEFAULTS.view,
       ...(boot.meta.spawnMode ? { spawnMode: boot.meta.spawnMode } : {}),
       ...boot.values,
       // A camera that orbits on its own is exactly the kind of unrequested motion the
@@ -74,6 +60,8 @@ class App {
 
     this.viewport = new Viewport(this.el.canvas, this.ctx, () => {
       if (this.exporting) this.recorder.cancel();
+      // Resizing empties the backing store, which an opaque context shows as black.
+      this.#clearCanvas();
       this.#renderOnce();
     });
     this.renderer = new Renderer(this.ctx, this.viewport);
@@ -82,10 +70,10 @@ class App {
     this.controls = new Controls(
       this.el.controls,
       this.scene.config,
-      (key, value) => this.#onConfigChange(key, value),
+      (changes) => this.#onConfigChanges(changes),
       {
-        onBatchChange: (changes) => this.#onConfigChanges(changes),
         onRangeModeChange: (mode) => this.#onRangeModeChange(mode),
+        resolveColor: (value) => (value === 'auto' ? this.theme.colors().foreground : value),
         // The profile has to be in place before the inputs are built, or the range bounds
         // would be written at Safe limits and immediately clamp an Experimental link.
         rangeMode: boot.meta.rangeMode,
@@ -97,11 +85,11 @@ class App {
     this.rafId = null;
     this.renderRafId = null;
     this.lastTime = 0;
-    this.persistTimer = null;
     /**
      * Single-step undo for the actions that overwrite the whole configuration at once.
-     * @type {{config: Record<string, unknown>, rangeMode: string, colorIsCustom: boolean,
-     *   label: string}|null}
+     * @type {{config: Record<string, unknown>, rangeMode: string,
+     *   camera: {yaw: number, pitch: number, distance: number},
+     *   duration: string, fps: string, label: string}|null}
      */
     this.undoState = null;
     /** @type {Array<() => void>} */
@@ -113,7 +101,6 @@ class App {
     this.#bindKeyboard();
     this.#bindIdleFade();
     this.#updateBudgetWarning();
-    // The Theme constructor ran before the scene existed, so apply its colour now.
     this.#onThemeChange();
 
     this.start();
@@ -157,13 +144,18 @@ class App {
    */
   advance(dt) {
     if (this.destroyed) return;
+    dt = Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0;
     const orbiting = this.scene.config.autoOrbit && this.projector.sortsByDepth;
     this.camera.update(dt, orbiting);
     this.scene.step(dt);
+    this.#updateBudgetWarning();
     this.#draw();
   }
 
   #draw() {
+    // Some DPR changes arrive without a resize or media-query event. Check before drawing,
+    // without reading layout on unchanged frames; sync also cancels an active export.
+    if (this.viewport.dpr !== currentDpr()) this.viewport.sync();
     this.renderer.render(this.scene, this.projector, {
       ...this.theme.colors(),
       trailAlpha: this.scene.config.trailAlpha,
@@ -189,40 +181,24 @@ class App {
     });
   }
 
-  /**
-   * Follow the theme with the default particle colour, so switching to light does not
-   * leave white particles on a white canvas. A colour the user picked themselves is never
-   * overwritten.
-   *
-   * @param {'dark'|'light'} [theme]
-   */
-  #onThemeChange(theme = this.theme?.current) {
-    if (!this.colorIsCustom && this.scene) {
-      this.scene.config.color = this.theme.colors().foreground;
-      this.controls?.syncFromConfig(this.scene.config);
-    }
-    if (theme && this.el) {
-      // The button offers the theme you would switch *to*, so its icon and label must
-      // both flip. Driven by `data-state` like every other icon button here.
-      this.el.themeButton.dataset.state = theme;
-      const label = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
-      // `title` is the hover tooltip and `aria-label` the accessible name; both are written
-      // here so they cannot drift apart.
-      this.el.themeButton.setAttribute('aria-label', label);
-      this.el.themeButton.setAttribute('title', label);
-    }
+  #onThemeChange() {
+    this.controls.syncFromConfig(this.scene.config);
+    const theme = this.theme.current;
+    this.el.themeButton.dataset.state = theme;
+    const label = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    this.el.themeButton.setAttribute('aria-label', label);
+    this.el.themeButton.setAttribute('title', label);
+    // A single translucent trail frame would leave the old background showing while paused.
+    this.#clearCanvas();
     this.#renderOnce();
   }
 
-  // --- Configuration ----------------------------------------------------
-
-  /**
-   * @param {string} key
-   * @param {unknown} value
-   */
-  #onConfigChange(key, value) {
-    this.#onConfigChanges([[key, value]]);
+  /** Paint the full canvas with the current theme background. */
+  #clearCanvas() {
+    this.renderer?.clear(this.theme.colors().background);
   }
+
+  // --- Configuration ----------------------------------------------------
 
   /**
    * @param {ReadonlyArray<readonly [string, unknown]>} changes
@@ -231,12 +207,11 @@ class App {
   #onConfigChanges(changes) {
     const rebuilt = this.scene.setMany(changes);
     for (const [key, value] of changes) {
-      if (key === 'color') this.colorIsCustom = true;
       if (key === 'spawnMode') this.controls.updateVisibility(value);
     }
     this.#updateBudgetWarning();
     this.#renderOnce();
-    this.#schedulePersist();
+    this.#persist();
     return rebuilt;
   }
 
@@ -251,28 +226,26 @@ class App {
     };
   }
 
-  /**
-   * Persist the configuration to `localStorage`, debounced — a slider drag emits an event per
-   * frame and each one would otherwise be a synchronous storage write.
-   *
-   * Only storage. The URL hash is written on demand by the share action, because rewriting it
-   * continuously would fight the address bar and flood history.
-   */
-  #schedulePersist() {
-    clearTimeout(this.persistTimer);
-    this.persistTimer = setTimeout(() => {
-      storeConfig(this.scene.config, this.#meta());
-    }, PERSIST_AFTER);
+  /** Save immediately; editing a shared snapshot returns reloads to the current local state. */
+  #persist() {
+    storeConfig(this.scene.config, this.#meta());
+    if (window.location.hash) {
+      const url = new URL(window.location.href);
+      url.hash = '';
+      window.history.replaceState(null, '', url);
+    }
+  }
+
+  #writeHash() {
+    const url = new URL(window.location.href);
+    url.hash = encodeConfig(this.scene.config, this.#meta());
+    window.history.replaceState(null, '', url);
+    return url;
   }
 
   /** Write the current scene into the URL and put that URL on the clipboard. */
   async #shareLink() {
-    const url = new URL(window.location.href);
-    url.hash = encodeConfig(this.scene.config, this.#meta());
-    // Replace rather than push: sharing is not a navigation, and the back button should not
-    // fill up with every scene the user copied.
-    window.history.replaceState(null, '', url);
-
+    const url = this.#writeHash();
     try {
       await navigator.clipboard.writeText(url.href);
       this.#setStatus('Link copied');
@@ -288,17 +261,15 @@ class App {
   /**
    * Snapshot the whole configuration before an action that overwrites it.
    *
-   * Randomise, reset and presets each discard a tuned scene in one click; without this there
-   * is no way back to it. `colorIsCustom` is part of the snapshot because it is not stored in
-   * the config — losing it would silently re-attach the particle colour to the theme.
-   *
    * @param {string} label Shown in the status line.
    */
   #snapshotForUndo(label) {
     this.undoState = {
       config: { ...this.scene.config },
       rangeMode: this.controls.rangeMode,
-      colorIsCustom: this.colorIsCustom,
+      camera: { yaw: this.camera.yaw, pitch: this.camera.pitch, distance: this.camera.distance },
+      duration: this.el.durationInput.value,
+      fps: this.el.fpsInput.value,
       label,
     };
   }
@@ -310,14 +281,9 @@ class App {
       return;
     }
 
-    const { config, rangeMode, colorIsCustom, label } = this.undoState;
+    const { config, rangeMode, camera, duration, fps, label } = this.undoState;
     // Single-step by design: the snapshot is consumed, not stacked.
     this.undoState = null;
-
-    // Read the view before applying anything: `applyValues` writes `view` straight into the
-    // config, so comparing afterwards would always report no change and the projector would
-    // never be swapped.
-    const viewChanged = config.view !== this.scene.config.view;
 
     if (rangeMode !== this.controls.rangeMode) {
       this.controls.setRangeMode(rangeMode);
@@ -325,18 +291,16 @@ class App {
     }
 
     this.controls.applyValues(config);
-    this.colorIsCustom = colorIsCustom;
+    Object.assign(this.camera, camera);
+    this.el.durationInput.value = duration;
+    this.el.fpsInput.value = fps;
 
     this.spawnToggle?.paint(config.spawnMode);
     this.controls.updateVisibility(config.spawnMode);
-    if (viewChanged) {
-      this.#applyView(config.view);
-      this.viewToggle?.paint(config.view);
-    }
+    this.#applyView(config.view);
+    this.viewToggle.paint(config.view);
 
     this.#onThemeChange();
-    this.renderer.clear();
-    this.#renderOnce();
     this.#setStatus(`Undid ${label}`);
   }
 
@@ -351,15 +315,10 @@ class App {
     if (!preset) return;
 
     this.#snapshotForUndo(`preset "${preset.label}"`);
-    // "Default" carries no values of its own, so it means every control key at its default —
-    // restricted to control keys, because `view` and `spawnMode` are owned by their segmented
-    // toggles and writing them here would desync the toggle from the scene.
-    const values =
-      preset.id === 'default'
-        ? Object.fromEntries(CONTROLS.map((spec) => [spec.key, DEFAULTS[spec.key]]))
-        : preset.values;
+    // `view` and `spawnMode` are owned by their segmented toggles, so presets never set them.
+    const values = presetValues(preset);
     this.controls.applyValues(values);
-    this.renderer.clear();
+    this.#clearCanvas();
     this.#renderOnce();
     this.#setStatus(`${preset.label} · Ctrl+Z to undo`);
   }
@@ -368,6 +327,7 @@ class App {
   #onRangeModeChange(mode) {
     this.#syncExportLimits(mode);
     this.#setStatus(mode === 'safe' ? 'Safe parameter ranges' : 'Experimental parameter ranges');
+    this.#persist();
   }
 
   /** @returns {Array<[string, HTMLInputElement]>} The export fields, paired with their key. */
@@ -380,16 +340,8 @@ class App {
 
   /** @param {import('./core/config.js').RangeMode} mode */
   #syncExportLimits(mode) {
-    const limits = EXPORT_LIMITS[mode];
     for (const [key, input] of this.#exportInputs) {
-      const bound = limits[key];
-      input.min = String(bound.min);
-      input.max = String(bound.max);
-      input.step = String(bound.step);
-      input.setAttribute('aria-valuemin', String(bound.min));
-      input.setAttribute('aria-valuemax', String(bound.max));
-      input.setAttribute('aria-valuestep', String(bound.step));
-
+      applyBounds(input, EXPORT_LIMITS[mode][key]);
       this.#clampExportInput(key, input, mode);
     }
   }
@@ -397,9 +349,8 @@ class App {
   /**
    * Snap one export field into its current profile's bounds.
    *
-   * Bound to `change` as well as called from `#syncExportLimits`, because previously the only
-   * clamp happened inside `#record` — so a typed `999` sat in the field looking accepted right
-   * up until the export ran.
+   * Bound to `change` as well as called from `#syncExportLimits`, so an out-of-range value
+   * is corrected when the field is left rather than when the export runs.
    *
    * @param {string} key
    * @param {HTMLInputElement} input
@@ -421,11 +372,6 @@ class App {
     this.el.canvas.dataset.view = view;
     document.body.dataset.view = view;
     this.#updateMeta();
-    try {
-      localStorage.setItem(VIEW_STORAGE_KEY, view);
-    } catch {
-      // Persisting the view is best-effort.
-    }
   }
 
   /** @param {'2d'|'3d'} view */
@@ -433,6 +379,7 @@ class App {
     if (this.scene.config.view === view) return;
     this.#applyView(view);
     this.#renderOnce();
+    this.#persist();
   }
 
   /**
@@ -445,17 +392,22 @@ class App {
    * self-clear after seven seconds.
    */
   #updateBudgetWarning() {
-    const over = this.scene.isOverBudget();
+    const count = this.scene.particleCount;
+    const open = this.#drawerOpen;
+    if (this.budgetCount === count && this.budgetDrawerOpen === open) return;
+    this.budgetCount = count;
+    this.budgetDrawerOpen = open;
+    const over = count > PARTICLE_BUDGET;
     const { budgetWarning, budgetNotice } = this.el;
 
     budgetWarning.hidden = !over;
-    budgetNotice.hidden = !over || this.#drawerOpen;
+    budgetNotice.hidden = !over || open;
 
     if (over) {
       budgetWarning.textContent =
-        `${this.scene.particleCount} particles exceeds the ${PARTICLE_BUDGET} budget — ` +
+        `${count} particles exceeds the ${PARTICLE_BUDGET} budget — ` +
         'expect reduced frame rate.';
-      budgetNotice.textContent = `${this.scene.particleCount} particles · over budget`;
+      budgetNotice.textContent = `${count} particles · over budget`;
     }
   }
 
@@ -465,33 +417,29 @@ class App {
    */
   #restartCurrent() {
     this.scene.restart();
-    this.renderer.clear();
+    this.#clearCanvas();
     this.#updateBudgetWarning();
     this.#renderOnce();
     this.#setStatus('Restarted current configuration');
   }
 
   /**
-   * Restore the complete application configuration in one transaction. The old reset action
-   * only reset generated controls, which left spawn mode, projection and export settings
-   * behind and made its name misleading.
+   * Restore the complete application configuration in one transaction: controls, spawn
+   * mode, projection, camera, range profile and export settings.
    */
   #restoreDefaults() {
-    const changes = this.controls.reset({ emit: false });
+    const changes = this.controls.reset();
     changes.push(['spawnMode', DEFAULTS.spawnMode], ['view', DEFAULTS.view]);
     const rebuilt = this.#onConfigChanges(changes);
     // A default action is a restart even when only cosmetic/view values differed and the
     // config transaction therefore did not need a structural rebuild.
     if (!rebuilt) this.scene.restart();
 
-    this.spawnToggle?.select(DEFAULTS.spawnMode, { notify: false });
-    this.rangeToggle?.select('safe', { notify: false });
-    this.viewToggle?.select(DEFAULTS.view, { notify: false });
+    this.spawnToggle.paint(DEFAULTS.spawnMode);
+    this.rangeToggle.paint('safe');
+    this.viewToggle.paint(DEFAULTS.view);
     this.controls.updateVisibility(DEFAULTS.spawnMode);
 
-    // Resetting the colour is special: the normal default follows the active theme rather
-    // than being a fixed value, so clear the custom marker before syncing it.
-    this.colorIsCustom = false;
     this.#onThemeChange();
 
     this.camera = new Camera();
@@ -499,10 +447,7 @@ class App {
 
     this.el.durationInput.value = String(EXPORT_DEFAULTS.duration);
     this.el.fpsInput.value = String(EXPORT_DEFAULTS.fps);
-    this.#syncExportLimits('safe');
 
-    this.renderer.clear();
-    this.#renderOnce();
     this.#setStatus('Defaults restored');
   }
 
@@ -513,7 +458,10 @@ class App {
 
     this.#on(el.playButton, 'click', () => (this.running ? this.stop() : this.start()));
 
-    this.#on(el.themeButton, 'click', () => this.theme.toggle());
+    this.#on(el.themeButton, 'click', () => {
+      this.theme.toggle();
+      this.#onThemeChange();
+    });
 
     this.#on(el.restartButton, 'click', () => this.#restartCurrent());
 
@@ -554,8 +502,7 @@ class App {
       this.#setView(view)
     );
     this.spawnToggle = bindSegmented(el.spawnToggle, this.scene.config.spawnMode, (mode) => {
-      this.controls.updateVisibility(mode);
-      this.#onConfigChange('spawnMode', mode);
+      this.#onConfigChanges([['spawnMode', mode]]);
     });
     this.rangeToggle = bindSegmented(el.rangeToggle, this.controls.rangeMode, (mode) =>
       this.controls.setRangeMode(mode)
@@ -575,8 +522,7 @@ class App {
    *
    * The drawer is a live preview of the artwork behind it, so on a wide viewport it is
    * deliberately **not** modal: no scrim, nothing dimmed, the piece keeps animating while a
-   * slider is dragged. Previously the scrim sat at 40% opacity over the whole canvas, which
-   * dimmed exactly the thing being tuned.
+   * slider is dragged.
    *
    * Below the breakpoint the panel covers most of the screen, so there it is a real modal
    * dialog. The same query drives `.scrim` in styles.css; the two must stay in step.
@@ -634,19 +580,11 @@ class App {
       el.panel.removeAttribute('aria-modal');
     }
 
-    // Focus containment. Without this, Tab walked straight out of the open modal drawer into
-    // the HUD behind the scrim.
     this.#syncOutsideInert();
-
-    // Move focus out first, then seal: setting `inert` while focus is still inside drops
-    // it on the body instead of somewhere useful.
     if (moveFocus && !open) el.panelToggle.focus();
-    // A closed drawer is only translated off-screen, so without `inert` its controls stay
-    // in the tab order and in the accessibility tree while invisible.
-    el.panel.inert = !open;
-    // Only a modal drawer steals focus. On a wide viewport the panel is an inspector beside
-    // the artwork, and yanking focus into it on open would be an interruption.
-    if (moveFocus && modal) el.panelClose.focus();
+    if (modal && !this.#sheetOpen && (moveFocus || !el.panel.contains(document.activeElement))) {
+      el.panelClose.focus();
+    }
 
     // The HUD notice and the in-drawer warning are two halves of one signal; opening the
     // drawer hands the message over from one to the other.
@@ -657,9 +595,8 @@ class App {
   }
 
   /**
-   * The shortcut sheet. Six keys were bound and documented nowhere in the UI.
-   *
-   * Always modal — it is a reference, not a tool, and there is nothing to preview behind it.
+   * The shortcut sheet. Always modal — it is a reference, not a tool, and there is nothing
+   * to preview behind it.
    */
   #bindShortcutSheet() {
     const { el } = this;
@@ -680,7 +617,8 @@ class App {
   /** @param {boolean} open */
   #setSheet(open) {
     const { el } = this;
-    if (!open && this.#sheetOpen) el.shortcutsButton.focus();
+    const wasOpen = this.#sheetOpen;
+    if (open && !wasOpen) this.sheetReturnFocus = document.activeElement;
 
     el.shortcuts.hidden = !open;
     el.shortcuts.inert = !open;
@@ -688,20 +626,24 @@ class App {
 
     this.#syncOutsideInert();
     if (open) el.shortcutsClose.focus();
+    else if (wasOpen) {
+      const target = this.sheetReturnFocus;
+      if (target?.isConnected && !target.closest('[inert]')) target.focus();
+      else if (this.#drawerOpen && this.#drawerIsModal) el.panelClose.focus();
+      else el.shortcutsButton.focus();
+      this.sheetReturnFocus = null;
+    }
     this.#wake();
   }
 
   /**
-   * Seal the canvas and HUD while a modal surface is up.
-   *
-   * Focus containment by `inert` rather than a manual Tab-cycling trap. Both the sheet and the
-   * modal drawer need it, and they can be open at once, so the condition lives in one place —
-   * two independent writers would race and leave the page permanently inert.
+   * Only the top modal surface remains interactive; the desktop drawer stays non-modal.
    */
   #syncOutsideInert() {
     const sealed = this.#sheetOpen || (this.#drawerOpen && this.#drawerIsModal);
     this.el.canvas.inert = sealed;
     this.el.hud.inert = sealed;
+    this.el.panel.inert = !this.#drawerOpen || this.#sheetOpen;
   }
 
   /**
@@ -844,9 +786,8 @@ class App {
    * tracks, and only the 3D view responds — a top-down orthographic projection has no
    * camera to orbit.
    *
-   * One pointer orbits; two pinch to zoom. Zoom used to be `wheel`-only, which meant that on
-   * a phone or tablet — where the canvas also sets `touch-action: none` — it could not be
-   * reached at all.
+   * One pointer orbits; two pinch to zoom, so zoom is reachable on touch devices, where the
+   * canvas sets `touch-action: none` and there is no wheel.
    */
   #bindPointer() {
     const { canvas } = this.el;
@@ -949,13 +890,7 @@ class App {
 
   #saveSnapshot() {
     this.el.canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `orbital-canvas-${Date.now()}.png`;
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      if (blob) download(blob, `orbital-canvas-${timestamp()}.png`);
     }, 'image/png');
   }
 
@@ -1035,8 +970,7 @@ class App {
   /** @param {boolean} playing */
   #setPlayState(playing) {
     const { playButton } = this.el;
-    // Never assign `textContent` on an icon button: the pre-refactor code did, which
-    // destroyed the child icon element on the very first click.
+    // Never assign `textContent` on an icon button: it would destroy the child icons.
     playButton.dataset.state = playing ? 'playing' : 'paused';
     playButton.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
     playButton.setAttribute('title', playing ? 'Pause (Space)' : 'Play (Space)');
@@ -1062,10 +996,14 @@ class App {
     this.stop();
     this.recorder.cancel();
     this.viewport.destroy();
+    this.controls.destroy();
+    this.viewToggle.destroy();
+    this.spawnToggle.destroy();
+    this.rangeToggle.destroy();
+    this.el.presetSelect.replaceChildren();
     if (this.renderRafId !== null) cancelAnimationFrame(this.renderRafId);
     this.renderRafId = null;
     clearTimeout(this.statusTimer);
-    clearTimeout(this.persistTimer);
     for (const off of this.teardown) off();
     this.teardown = [];
   }
@@ -1102,7 +1040,6 @@ function collectElements(doc) {
     rangeToggle: 'rangeToggle',
     indicator: 'recordingIndicator',
     status: 'statusLine',
-    hintLine: 'hintLine',
     markMeta: 'markMeta',
     budgetWarning: 'budgetWarning',
     budgetNotice: 'budgetNotice',
@@ -1120,27 +1057,6 @@ function collectElements(doc) {
   }
   if (missing.length) throw new Error(`Missing required elements: #${missing.join(', #')}`);
   return found;
-}
-
-/**
- * Initial view mode: `?view=` wins, then the permalink hash, then the stored preference,
- * then 3D. The explicit query parameter stays on top because it is the documented override.
- *
- * @param {Document} doc
- * @param {import('./ui/permalink.js').Meta} [meta] Decoded from the hash or stored session.
- * @returns {'2d'|'3d'}
- */
-function initialView(doc, meta = {}) {
-  const fromUrl = new URL(doc.location.href).searchParams.get('view');
-  if (fromUrl === '2d' || fromUrl === '3d') return fromUrl;
-  if (meta.view === '2d' || meta.view === '3d') return meta.view;
-  try {
-    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
-    if (stored === '2d' || stored === '3d') return stored;
-  } catch {
-    // Fall through to the default.
-  }
-  return '3d';
 }
 
 const app = new App(document);

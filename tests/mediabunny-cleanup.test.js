@@ -117,3 +117,62 @@ describe('Mediabunny native resource cleanup', () => {
     expect(fixture.color.close).toHaveBeenCalledOnce();
   });
 });
+
+describe('Mediabunny Firefox codec probe cleanup', () => {
+  const phases = ['success', 'configure', 'encode', 'flush', 'error'];
+  it.each(phases)('releases native resources after %s', async (phase) => {
+    vi.stubGlobal('navigator', { userAgent: 'Firefox/128.0' });
+    const primary = new Error(`${phase} failed`);
+    const encoders = [],
+      frames = [];
+    class Encoder {
+      static async isConfigSupported() {
+        return { supported: true };
+      }
+
+      constructor(callbacks) {
+        encoders.push(this);
+        this.state = 'unconfigured';
+        this.configure = vi.fn(() => {
+          if (phase === 'configure') throw primary;
+          this.state = 'configured';
+        });
+        this.encode = vi.fn(() => {
+          if (phase === 'encode') throw primary;
+        });
+        this.flush = vi.fn(async () => {
+          if (phase === 'error') {
+            this.state = 'closed';
+            callbacks.error(primary);
+            throw primary;
+          }
+          if (phase === 'flush') throw primary;
+        });
+        this.close = vi.fn(() => {
+          this.state = 'closed';
+        });
+      }
+    }
+    class Frame {
+      constructor() {
+        frames.push(this);
+        this.close = vi.fn();
+      }
+    }
+    vi.stubGlobal('VideoEncoder', Encoder);
+    vi.stubGlobal('VideoFrame', Frame);
+    const { canEncodeVideo } = await import('mediabunny');
+    // Each scenario needs a distinct key in the dependency's native ESM memoization.
+    const options = { width: 640 + phases.indexOf(phase) * 2, height: 480 };
+    await expect(canEncodeVideo('avc', options)).resolves.toBe(phase === 'success');
+    expect(encoders).toHaveLength(1);
+    expect(encoders[0].state).toBe('closed');
+    expect(encoders[0].close).toHaveBeenCalledTimes(phase === 'error' ? 0 : 1);
+    expect(frames).toHaveLength(phase === 'configure' ? 0 : 1);
+    for (const frame of frames) expect(frame.close).toHaveBeenCalledOnce();
+
+    // A memoized result must not create another native encoder.
+    await expect(canEncodeVideo('avc', options)).resolves.toBe(phase === 'success');
+    expect(encoders).toHaveLength(1);
+  });
+});

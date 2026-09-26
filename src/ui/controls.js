@@ -1,4 +1,5 @@
 import {
+  CONTROL_BY_KEY,
   CONTROLS,
   DEFAULTS,
   formatValue,
@@ -8,7 +9,6 @@ import {
   SECTIONS,
   toDisplay,
   toInternal,
-  validateControls,
 } from '../core/config.js';
 
 /**
@@ -22,20 +22,19 @@ export class Controls {
   /**
    * @param {HTMLElement} container
    * @param {object} config Live config object; read for initial values only.
-   * @param {(key: string, value: unknown) => void} onChange
+   * @param {(changes: ReadonlyArray<readonly [string, unknown]>) => void} onChange
    * @param {object} [options]
-   * @param {(changes: ReadonlyArray<readonly [string, unknown]>) => void} [options.onBatchChange]
    * @param {(mode: import('../core/config.js').RangeMode) => void} [options.onRangeModeChange]
+   * @param {(value: string) => string} options.resolveColor Resolve the automatic colour for its swatch.
    * @param {import('../core/config.js').RangeMode} [options.rangeMode] Initial profile. Must be
    *   set before `#build`, because the input bounds are written from it.
    */
   constructor(container, config, onChange, options = {}) {
     this.container = container;
     this.onChange = onChange;
-    this.onBatchChange =
-      options.onBatchChange ??
-      ((changes) => changes.forEach(([key, value]) => onChange(key, value)));
     this.onRangeModeChange = options.onRangeModeChange;
+    this.resolveColor = options.resolveColor;
+    this.listeners = new AbortController();
     /** @type {import('../core/config.js').RangeMode} */
     this.rangeMode = RANGE_MODES.includes(options.rangeMode) ? options.rangeMode : 'safe';
     /** @type {Map<string, HTMLInputElement|HTMLSelectElement>} */
@@ -52,11 +51,6 @@ export class Controls {
     this.#updateRangeMetadata();
     this.syncFromConfig(config);
     this.updateVisibility(config.spawnMode);
-
-    const problems = validateControls(document);
-    if (problems.length) {
-      throw new Error(`Invalid control specification:\n  ${problems.join('\n  ')}`);
-    }
   }
 
   #build() {
@@ -129,11 +123,8 @@ export class Controls {
       input = document.createElement('input');
       input.className = `control__input control__input--${spec.type}`;
       if (spec.type === 'range') {
-        const bounds = rangeBounds(spec, this.rangeMode);
         input.type = 'range';
-        input.min = String(bounds.min);
-        input.max = String(bounds.max);
-        input.step = String(bounds.step);
+        applyBounds(input, rangeBounds(spec, this.rangeMode));
       } else if (spec.type === 'color') {
         input.type = 'color';
       } else {
@@ -142,7 +133,9 @@ export class Controls {
     }
 
     input.id = spec.id;
-    input.addEventListener('input', () => this.#handleInput(spec, input));
+    input.addEventListener('input', () => this.#handleInput(spec, input), {
+      signal: this.listeners.signal,
+    });
     this.inputs.set(spec.key, input);
     return input;
   }
@@ -155,7 +148,7 @@ export class Controls {
     const raw = spec.type === 'checkbox' ? input.checked : input.value;
     const value = toInternal(spec, raw, this.rangeMode);
     this.#writeValue(spec, value);
-    this.onChange(spec.key, value);
+    this.onChange([[spec.key, value]]);
   }
 
   /**
@@ -197,7 +190,7 @@ export class Controls {
     }
 
     this.onRangeModeChange?.(mode);
-    if (changes.length) this.onBatchChange(changes);
+    if (changes.length) this.onChange(changes);
     return true;
   }
 
@@ -229,22 +222,15 @@ export class Controls {
   }
 
   /**
-   * Restore every control to its default and return to the Safe profile. `DEFAULTS` is the
-   * single source of truth here.
-   *
-   * `emit: false` is used by the app's full-default action so it can add the segmented scene
-   * state (spawn mode and projection) to the same transaction and rebuild only once.
-   *
-   * @param {{emit?: boolean}} [options]
+   * Restore controls without emitting, so the app can apply all defaults in one transaction.
    * @returns {Array<[string, unknown]>} Changes written into the controls.
    */
-  reset({ emit = true } = {}) {
+  reset() {
     this.rangeMode = 'safe';
     this.#updateRangeMetadata();
     const changes = CONTROLS.map((spec) => [spec.key, DEFAULTS[spec.key]]);
     for (const [key, value] of changes) this.#writeValue(this.#specFor(key), value);
     this.onRangeModeChange?.('safe');
-    if (emit) this.onBatchChange(changes);
     return changes;
   }
 
@@ -258,11 +244,11 @@ export class Controls {
   applyValues(values) {
     const changes = [];
     for (const [key, value] of Object.entries(values)) {
-      const spec = CONTROLS.find((candidate) => candidate.key === key);
+      const spec = CONTROL_BY_KEY.get(key);
       if (spec) this.#writeValue(spec, value);
       changes.push([key, value]);
     }
-    if (changes.length) this.onBatchChange(changes);
+    if (changes.length) this.onChange(changes);
   }
 
   /**
@@ -272,10 +258,10 @@ export class Controls {
   randomize(rng = Math.random) {
     const changes = CONTROLS.filter((spec) => spec.randomise !== false).map((spec) => [
       spec.key,
-      randomValue(spec, rng, this.rangeMode),
+      toInternal(spec, randomValue(spec, rng, this.rangeMode), this.rangeMode),
     ]);
     for (const [key, value] of changes) this.#writeValue(this.#specFor(key), value);
-    this.onBatchChange(changes);
+    this.onChange(changes);
   }
 
   /**
@@ -285,13 +271,14 @@ export class Controls {
   #writeValue(spec, value) {
     const input = this.inputs.get(spec.key);
     if (spec.type === 'checkbox') input.checked = Boolean(value);
+    else if (spec.type === 'color') input.value = this.resolveColor(value);
     else input.value = String(toDisplay(spec, value, this.rangeMode));
 
     const formatted = formatValue(spec, value, this.rangeMode);
     this.badges.get(spec.key).textContent = formatted;
     if (spec.type === 'range') {
       input.setAttribute('aria-valuetext', formatted);
-      // The track is a hairline, so thumb position was the only cue for a value. `--fill`
+      // The track is a hairline, so thumb position alone is a weak cue for a value. `--fill`
       // drives a two-stop gradient on the track; see `.control__input--range` in styles.css.
       const { min, max } = rangeBounds(spec, this.rangeMode);
       const span = max - min;
@@ -302,24 +289,35 @@ export class Controls {
 
   #updateRangeMetadata() {
     for (const spec of CONTROLS) {
-      if (spec.type !== 'range') continue;
-      const input = this.inputs.get(spec.key);
-      const bounds = rangeBounds(spec, this.rangeMode);
-      input.min = String(bounds.min);
-      input.max = String(bounds.max);
-      input.step = String(bounds.step);
-      input.setAttribute('aria-valuemin', String(bounds.min));
-      input.setAttribute('aria-valuemax', String(bounds.max));
-      input.setAttribute('aria-valuestep', String(bounds.step));
+      if (spec.type === 'range')
+        applyBounds(this.inputs.get(spec.key), rangeBounds(spec, this.rangeMode));
     }
   }
 
   /** @param {string} key */
   #specFor(key) {
-    const spec = CONTROLS.find((candidate) => candidate.key === key);
+    const spec = CONTROL_BY_KEY.get(key);
     if (!spec) throw new Error(`Unknown control key "${key}".`);
     return spec;
   }
+
+  destroy() {
+    this.listeners.abort();
+    this.container.replaceChildren();
+  }
+}
+
+/**
+ * Write numeric bounds onto a range or number input. Native inputs expose these to assistive
+ * technology themselves, so no `aria-valuemin`/`aria-valuemax` attributes are needed.
+ *
+ * @param {HTMLInputElement} input
+ * @param {{min: number, max: number, step: number}} bounds
+ */
+export function applyBounds(input, { min, max, step }) {
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
 }
 
 /**
@@ -337,11 +335,11 @@ function clampFraction(value) {
  * @param {HTMLElement} root Element containing the buttons.
  * @param {string} initial Initially active value.
  * @param {(value: string) => void} onSelect
- * @returns {{ select: (value: string, options?: {notify?: boolean}) => void,
- *   paint: (value: string) => void }}
+ * @returns {{select: (value: string) => void, paint: (value: string) => void, destroy: () => void}}
  */
 export function bindSegmented(root, initial, onSelect) {
   const buttons = [...root.querySelectorAll('[data-value]')];
+  const listeners = new AbortController();
 
   const paint = (value) => {
     for (const button of buttons) {
@@ -351,18 +349,21 @@ export function bindSegmented(root, initial, onSelect) {
     }
   };
 
-  const select = (value, { notify = true } = {}) => {
+  const select = (value) => {
     paint(value);
-    if (notify) onSelect(value);
+    onSelect(value);
   };
 
   for (const button of buttons) {
-    button.addEventListener('click', () => select(button.dataset.value));
+    button.addEventListener('click', () => select(button.dataset.value), {
+      signal: listeners.signal,
+    });
   }
 
   paint(initial);
   return {
     select,
     paint,
+    destroy: () => listeners.abort(),
   };
 }

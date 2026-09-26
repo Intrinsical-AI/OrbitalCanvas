@@ -23,9 +23,9 @@ const radToDeg = (r) => r / DEG;
 export const RANGE_MODES = Object.freeze(['safe', 'experimental']);
 
 /**
- * Export limits share the same profile switch as the scene controls. The experimental export
- * ceiling intentionally remains the original 120 s / 120 fps: unlike a scene parameter, a
- * longer export only multiplies work and does not create a richer interactive state.
+ * Export limits share the same profile switch as the scene controls. The experimental
+ * ceiling stops at 120 s / 120 fps: unlike a scene parameter, a longer export only
+ * multiplies work and does not create a richer interactive state.
  */
 export const EXPORT_LIMITS = Object.freeze({
   safe: Object.freeze({
@@ -46,8 +46,6 @@ export const EXPORT_DEFAULTS = Object.freeze({ duration: 6, fps: 60 });
  */
 export const DEFAULTS = Object.freeze({
   // --- Simulation -------------------------------------------------------
-  /** Geometry implementation id, resolved through `core/geometry/index.js`. */
-  geometry: 'euclidean',
   /** `'generative'` spawns rings over time; `'static'` builds a fixed, deterministic set. */
   spawnMode: 'generative',
   /** Particles per ring. */
@@ -61,9 +59,9 @@ export const DEFAULTS = Object.freeze({
   /**
    * Radius decrement between successive rings, world units.
    *
-   * Raised from the original 10: with a 12-ring budget a step of 10 left every ring within
-   * 110 units of the outermost one, so the whole set read as a single thick circle and the
-   * accumulated tilt was invisible. 28 spreads the budget across the full radius range.
+   * With a 12-ring budget, 28 spreads the rings across the full radius range. A small step
+   * keeps every ring near the outermost one, so the set reads as a single thick circle and
+   * the accumulated tilt is invisible.
    */
   radiusStep: 28,
   /** Rings smaller than this are not spawned. */
@@ -73,8 +71,8 @@ export const DEFAULTS = Object.freeze({
   /**
    * Seconds between ring spawns.
    *
-   * Also lowered from the original 5: at that rate the scene needed roughly a minute
-   * before it showed any depth at all, and a first-time visitor saw a flat circle.
+   * Short enough that the scene shows depth within seconds; at several seconds per ring a
+   * first-time visitor sees a flat circle for about a minute.
    */
   circleInterval: 0.8,
   /** Ring budget; the oldest ring fades out once this is exceeded. */
@@ -90,11 +88,11 @@ export const DEFAULTS = Object.freeze({
   /** Particle shape id, resolved through `view/shapes.js`. */
   shape: 'icosahedron',
   /**
-   * Particle radius, world units.
+   * Particle radius, CSS pixels before perspective scaling.
    *
-   * Reduced from 5: the icosahedron shape draws a cluster at 1.8x this radius, so at 5 the
-   * clusters on a ring overlapped into a continuous tube. At 3 they read as discrete beads,
-   * which is what makes the ring structure legible without colour.
+   * The icosahedron shape draws a cluster at 1.8x this radius. At 3 the clusters read as
+   * discrete beads, which keeps the ring structure legible without colour; around 5 they
+   * overlap into a continuous tube.
    */
   size: 3,
   /** Chord stroke width, CSS pixels. */
@@ -102,24 +100,17 @@ export const DEFAULTS = Object.freeze({
   /**
    * Chord layer opacity.
    *
-   * Was a hardcoded 0.5, which was tuned for rainbow chords where hue separated overlapping
-   * lines. Monochrome has only luminance to work with, so hundreds of crossing chords at
-   * that opacity sum to a solid white mass. Exposed as a control because it is the single
-   * most effective density dial in the piece.
+   * Monochrome chords have only luminance to separate them, so hundreds of crossing chords
+   * at high opacity sum to a solid mass. This is the single most effective density dial in
+   * the piece.
    */
   chordAlpha: 0.14,
-  /**
-   * Particle fill colour.
-   *
-   * White by default: the shell is strictly monochrome, so the canvas is the only place
-   * colour appears and it is entirely the user's choice to introduce it.
-   */
-  color: '#ffffff',
+  /** Particle fill colour: 'auto' follows the theme, or an explicit hex colour. */
+  color: 'auto',
   /**
    * Cycle chord colour through the hue wheel over time.
    *
-   * Off by default, which draws chords in the theme foreground instead. The rainbow cycle
-   * is the original behaviour and remains one click away.
+   * Off by default, which draws chords in the theme foreground instead.
    */
   chromaticChords: false,
   /** Canvas `shadowBlur` glow. Off by default: it is a canvas2d performance cliff. */
@@ -139,10 +130,8 @@ export const DEFAULTS = Object.freeze({
 /**
  * Drawer sections, in render order.
  *
- * Seventeen controls in one flat list gave the drawer no structure at all; grouping them is
- * information architecture, not styling, so it lives here next to the specs rather than in the
- * DOM. `validateControls` rejects a spec pointing at an id that is not in this list, which is
- * the same guarantee that makes a phantom control impossible.
+ * Grouping is information architecture, not styling, so it lives here next to the specs
+ * rather than in the DOM.
  *
  * @typedef {object} Section
  * @property {string} id
@@ -159,9 +148,8 @@ export const SECTIONS = Object.freeze([
 /**
  * Declarative UI control specification.
  *
- * Drives input creation, badge formatting, reset and randomise. Every entry maps one DOM
- * element id to one `DEFAULTS` key. A missing element is a hard error surfaced by
- * `validateControls`, which is what makes the old "phantom control" bug impossible.
+ * Drives input creation, badge formatting, reset and randomise. Every entry maps one
+ * generated input id to one `DEFAULTS` key; `tests/spec-checks.js` validates the table.
  *
  * @typedef {object} ControlSpec
  * @property {string} id DOM element id.
@@ -308,7 +296,9 @@ export const CONTROLS = Object.freeze([
     label: 'Ring budget',
     section: 'form',
     min: 1,
-    max: 28,
+    // Reserve six slots for fading rings at the shortest interval (0.2 s), including
+    // frame-boundary rounding. (25 + 6) * 128 = 3968 particles at Safe limits.
+    max: 25,
     experimentalMax: 48,
     step: 1,
     precision: 0,
@@ -396,13 +386,15 @@ export const CONTROLS = Object.freeze([
   },
 ]);
 
+/** @type {ReadonlyMap<string, ControlSpec>} */
+export const CONTROL_BY_KEY = new Map(CONTROLS.map((spec) => [spec.key, spec]));
+
 /**
  * Named starting points, in **internal units** so they read exactly like `DEFAULTS`.
  *
  * These exist because `randomize()` walks the whole parameter space uniformly, which mostly
- * lands on noise. A preset is a hand-picked region worth arriving at directly. Every key is
- * checked against `DEFAULTS` by `validatePresets`, so a preset cannot introduce a config key
- * the scene does not understand.
+ * lands on noise. A preset is a hand-picked region worth arriving at directly; see
+ * `presetValues` for how one is applied.
  *
  * @typedef {object} Preset
  * @property {string} id
@@ -477,23 +469,34 @@ export const PRESETS = Object.freeze([
   }),
 ]);
 
+/**
+ * The complete control state a preset produces: every control at its default, then the
+ * preset's own values. Applying a preset therefore gives the same result whatever was set
+ * before. `autoOrbit` is left out: it is a motion preference, not part of a look, and it is
+ * switched off for reduced-motion users.
+ *
+ * @param {Preset} preset
+ * @returns {Record<string, unknown>} Internal units.
+ */
+export function presetValues(preset) {
+  const values = {};
+  for (const spec of CONTROLS) {
+    if (spec.key !== 'autoOrbit') values[spec.key] = DEFAULTS[spec.key];
+  }
+  return Object.assign(values, preset.values);
+}
+
 /** Config keys whose change requires the ring set to be rebuilt from scratch. */
 export const REBUILD_KEYS = Object.freeze([
-  'geometry',
   'spawnMode',
   'numPoints',
+  'planeAngle',
   'initialRadius',
   'radiusStep',
   'minRadius',
+  'maxRings',
   'ringCount',
 ]);
-
-/**
- * @returns {Record<string, unknown>} A fresh mutable copy of the defaults.
- */
-export function createConfig(overrides = {}) {
-  return { ...DEFAULTS, ...overrides };
-}
 
 /**
  * @param {number} value
@@ -586,7 +589,8 @@ export function toDisplay(spec, internalValue, mode = 'safe') {
  * @returns {string}
  */
 export function formatValue(spec, internalValue, mode = 'safe') {
-  if (spec.type === 'color') return String(internalValue).toUpperCase();
+  if (spec.type === 'color')
+    return internalValue === 'auto' ? 'Auto' : String(internalValue).toUpperCase();
   if (spec.type === 'checkbox') return internalValue ? 'on' : 'off';
   if (spec.type === 'select') {
     const option = spec.options?.find((o) => o.value === internalValue);
@@ -617,99 +621,4 @@ export function randomValue(spec, rng = Math.random, mode = 'safe') {
   if (spec.type === 'checkbox') return rng() < 0.5;
   const { min, max } = rangeBounds(spec, mode);
   return snapToStep(spec, min + rng() * (max - min), mode);
-}
-
-/**
- * Assert the spec is internally consistent and, when a document is supplied, that every
- * control id resolves to a real element.
- *
- * @param {Document} [doc] Omit to run the document-free checks only.
- * @param {ReadonlyArray<ControlSpec>} [specs] Overridable so tests can prove each check
- *   actually fires; production callers always validate the real `CONTROLS`.
- * @returns {string[]} Problems found; empty means valid.
- */
-export function validateControls(doc, specs = CONTROLS) {
-  const problems = [];
-  const seenIds = new Set();
-  const sectionIds = new Set(SECTIONS.map((section) => section.id));
-
-  for (const spec of specs) {
-    if (seenIds.has(spec.id)) problems.push(`duplicate control id: ${spec.id}`);
-    seenIds.add(spec.id);
-
-    if (!(spec.key in DEFAULTS)) {
-      problems.push(`control "${spec.id}" targets unknown config key "${spec.key}"`);
-    }
-    if (!sectionIds.has(spec.section)) {
-      problems.push(`control "${spec.id}" is in unknown section "${spec.section}"`);
-    }
-    if (spec.type === 'range') {
-      for (const field of ['min', 'max', 'step', 'experimentalMax']) {
-        if (typeof spec[field] !== 'number') {
-          problems.push(`range control "${spec.id}" is missing "${field}"`);
-        }
-      }
-      if (typeof spec.min === 'number' && typeof spec.max === 'number' && spec.min >= spec.max) {
-        problems.push(`range control "${spec.id}" has min >= max`);
-      }
-      if (
-        typeof spec.min === 'number' &&
-        typeof spec.experimentalMax === 'number' &&
-        spec.min >= spec.experimentalMax
-      ) {
-        problems.push(`range control "${spec.id}" has min >= experimentalMax`);
-      }
-      if (
-        typeof spec.max === 'number' &&
-        typeof spec.experimentalMax === 'number' &&
-        spec.max > spec.experimentalMax
-      ) {
-        problems.push(`range control "${spec.id}" has max > experimentalMax`);
-      }
-    }
-    if (spec.type === 'select' && !spec.options?.length) {
-      problems.push(`select control "${spec.id}" has no options`);
-    }
-    if (doc && !doc.getElementById(spec.id)) {
-      problems.push(`control "${spec.id}" has no matching element in the document`);
-    }
-  }
-
-  return problems;
-}
-
-/**
- * Assert every preset only names keys the scene understands, and that its values survive the
- * control pipeline unchanged — a preset outside a control's own range would be silently
- * clamped on apply, which makes the preset a lie.
- *
- * @returns {string[]} Problems found; empty means valid.
- */
-export function validatePresets() {
-  const problems = [];
-  const seenIds = new Set();
-
-  for (const preset of PRESETS) {
-    if (seenIds.has(preset.id)) problems.push(`duplicate preset id: ${preset.id}`);
-    seenIds.add(preset.id);
-
-    for (const [key, value] of Object.entries(preset.values)) {
-      if (!(key in DEFAULTS)) {
-        problems.push(`preset "${preset.id}" sets unknown config key "${key}"`);
-        continue;
-      }
-      const spec = CONTROLS.find((candidate) => candidate.key === key);
-      if (!spec || spec.type !== 'range') continue;
-      // Round-trip through the safe profile: anything that moves is out of range.
-      const round = toInternal(spec, toDisplay(spec, value, 'safe'), 'safe');
-      if (Math.abs(Number(round) - Number(value)) > 1e-9) {
-        problems.push(
-          `preset "${preset.id}" value for "${key}" (${value}) is outside the safe range ` +
-            `and would be clamped to ${round}`
-        );
-      }
-    }
-  }
-
-  return problems;
 }
