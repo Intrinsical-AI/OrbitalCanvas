@@ -1,11 +1,6 @@
 /**
  * Video export.
  *
- * Replaces CCapture, which was wired up incorrectly: `capturer.start()` was called but the
- * required per-frame `capturer.capture(canvas)` never was, so recording silently produced
- * nothing. It was also an unguarded CDN global constructed at startup, meaning a blocked
- * CDN took every control on the page down with it.
- *
  * Two strategies, in order:
  *
  *  1. **WebCodecs via Mediabunny** — the export drives the animation itself at a fixed
@@ -86,7 +81,7 @@ export class Recorder {
     const { encode, selectCodec } = await import('./webcodecs-export.js');
 
     const codec = await selectCodec(this.canvas);
-    if (this.aborted) throw new DOMException('Recording cancelled', 'AbortError');
+    if (this.aborted) throw cancelled();
     if (!codec) {
       return this.#recordWithMediaRecorder({ fps, duration, renderFrame });
     }
@@ -102,7 +97,7 @@ export class Recorder {
       isAborted: () => this.aborted,
     });
 
-    if (this.aborted) throw new DOMException('Recording cancelled', 'AbortError');
+    if (this.aborted) throw cancelled();
     const filename = `orbital-canvas-${timestamp()}.${extension}`;
     download(blob, filename);
     return { filename, strategy: `webcodecs:${codec}` };
@@ -142,7 +137,7 @@ export class Recorder {
           }
         );
         // Cancellation must also work in a background tab where rAF is suspended.
-        this.cancelCapture = () => reject(new DOMException('Recording cancelled', 'AbortError'));
+        this.cancelCapture = () => reject(cancelled());
         const startedAt = performance.now();
         let previousElapsed = 0;
         const tick = (now) => {
@@ -164,10 +159,15 @@ export class Recorder {
         rafId = requestAnimationFrame(tick);
       });
 
-      if (this.aborted) throw new DOMException('Recording cancelled', 'AbortError');
-      const blob = new Blob(chunks, { type: mimeType ?? 'video/webm' });
+      if (this.aborted) throw cancelled();
+      const actualType = recorder.mimeType || chunks.find((chunk) => chunk.type)?.type || mimeType;
+      const extension = { 'video/webm': 'webm', 'video/mp4': 'mp4' }[
+        actualType?.split(';')[0].trim().toLowerCase()
+      ];
+      if (!extension) throw new Error(`Unsupported capture format: ${actualType || 'unknown'}.`);
+      const blob = new Blob(chunks, { type: actualType });
       if (!blob.size) throw new Error('Capture produced no video data.');
-      const filename = `orbital-canvas-${timestamp()}.webm`;
+      const filename = `orbital-canvas-${timestamp()}.${extension}`;
       download(blob, filename);
       return { filename, strategy: 'mediarecorder' };
     } finally {
@@ -182,8 +182,13 @@ export class Recorder {
   }
 }
 
-/** @returns {string} Filesystem-safe local timestamp. */
-function timestamp() {
+/** @returns {DOMException} The error an export rejects with when cancelled. */
+export function cancelled() {
+  return new DOMException('Recording cancelled', 'AbortError');
+}
+
+/** @returns {string} Filesystem-safe UTC timestamp. */
+export function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
@@ -191,7 +196,7 @@ function timestamp() {
  * @param {Blob} blob
  * @param {string} filename
  */
-function download(blob, filename) {
+export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;

@@ -71,12 +71,14 @@
   --ink: #ffffff;
   --void: #000000;
   --ink-2: rgba(255, 255, 255, 0.62);
-  /* Raised from 0.38, which computed to ~3.6:1 — below the 4.5:1 WCAG AA floor at the 9-11px
-     sizes this token is used at. 0.55 is ~6.2:1 and still clearly recessive against --ink. */
+  /* ~6.2:1, above the 4.5:1 WCAG AA floor at the 9-11px sizes this token is used at, and
+     still clearly recessive against --ink. */
   --ink-3: rgba(255, 255, 255, 0.55);
   --line: rgba(255, 255, 255, 0.16);
   --line-strong: rgba(255, 255, 255, 0.34);
-  --veil: rgba(0, 0, 0, 0.55);
+  /* Opaque enough to stay legible without backdrop blur over the animated canvas, where a
+     blur is recomputed by the compositor on every frame. */
+  --veil: rgba(0, 0, 0, 0.72);
   --veil-solid: rgba(6, 6, 6, 0.92);
   color-scheme: dark;
 }
@@ -89,7 +91,7 @@
   --ink-3: rgba(0, 0, 0, 0.58);
   --line: rgba(0, 0, 0, 0.18);
   --line-strong: rgba(0, 0, 0, 0.38);
-  --veil: rgba(255, 255, 255, 0.6);
+  --veil: rgba(255, 255, 255, 0.78);
   --veil-solid: rgba(252, 252, 252, 0.94);
   color-scheme: light;
 }
@@ -270,7 +272,6 @@ body.is-idle .hud:has(:focus-visible) {
   font: inherit;
   text-decoration: none;
   cursor: pointer;
-  backdrop-filter: blur(14px);
   transition:
     border-color var(--fast) var(--ease),
     background var(--fast) var(--ease),
@@ -341,7 +342,6 @@ body.is-idle .hud:has(:focus-visible) {
   border: var(--hairline) solid var(--line);
   border-radius: 2px;
   background: var(--veil);
-  backdrop-filter: blur(14px);
   overflow: hidden;
 }
 
@@ -403,7 +403,6 @@ body.is-idle .hud:has(:focus-visible) {
   border: var(--hairline) solid var(--line);
   border-radius: 2px;
   background: var(--veil);
-  backdrop-filter: blur(14px);
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.1em;
@@ -508,7 +507,6 @@ body.is-idle .hud:has(:focus-visible) {
   border: var(--hairline) solid var(--line-strong);
   border-radius: 2px;
   background: var(--veil);
-  backdrop-filter: blur(14px);
   color: var(--ink-2);
 }
 
@@ -816,8 +814,7 @@ body[data-view='2d'] .hint {
 /* --------------------------------------------------------------------------
    Shortcut sheet
 
-   Six keys were bound and documented nowhere. Same hairline vocabulary as the drawer;
-   centred rather than edge-docked because it is a reference, not a tool.
+   Same hairline vocabulary as the drawer; centred rather than edge-docked because it is a reference, not a tool.
    -------------------------------------------------------------------------- */
 
 .sheet {

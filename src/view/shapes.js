@@ -1,18 +1,14 @@
 /**
  * Particle shapes.
  *
- * A shape draws one particle at an already-projected screen position. It receives the
- * projected `scale` so it can honour perspective foreshortening in the 3D view; in the 2D
- * view `scale` is always 1, which is what keeps that mode strictly flat.
+ * A shape traces one particle at an already-projected screen position and radius. The
+ * renderer applies perspective scaling in 3D; the 2D view keeps every radius uniform.
  */
 
 const PHI = (1 + Math.sqrt(5)) / 2;
 
 /**
  * The twelve vertices of a regular icosahedron, normalised to the unit sphere.
- *
- * Hoisted to module scope and computed once. The pre-refactor renderer rebuilt and
- * re-normalised this table inside `draw`, i.e. once per particle per frame.
  *
  * @type {ReadonlyArray<readonly [number, number, number]>}
  */
@@ -46,59 +42,87 @@ export const ICOSAHEDRON_VERTICES = Object.freeze(
  * @typedef {object} Shape
  * @property {string} id
  * @property {string} label
- * @property {(ctx: CanvasRenderingContext2D, s: ShapeContext) => void} draw
+ * @property {(ctx: CanvasRenderingContext2D, s: ShapeContext) => void} trace Append the
+ *   particle's subpaths to the current path. The renderer owns `beginPath` and `fill`, so
+ *   particles sharing an opacity are filled in one call.
  */
+
+/** Below this cluster radius (CSS pixels) the twelve sub-discs are indistinguishable. */
+const CLUSTER_LOD_RADIUS = 1.5;
+
+/**
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} x
+ * @param {number} y
+ * @param {number} radius
+ */
+function traceDisc(ctx, x, y, radius) {
+  ctx.moveTo(x + radius, y);
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+}
 
 /** @type {Shape} */
 export const disc = {
   id: 'disc',
   label: 'Disc',
-  draw(ctx, { sx, sy, radius }) {
-    ctx.beginPath();
-    ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-    ctx.fill();
+  trace(ctx, { sx, sy, radius }) {
+    traceDisc(ctx, sx, sy, radius);
   },
 };
 
 /**
- * The signature look of the original project: each particle is a cluster of twelve small
- * discs at the vertices of a slowly tumbling icosahedron, with sub-disc size modulated by
- * the vertex's own depth.
+ * Tumbled vertices `[x, y, z]` × 12. The tumble depends only on time, so every particle in
+ * a frame shares it and it is computed once per frame rather than once per particle.
+ */
+const tumbled = new Float64Array(ICOSAHEDRON_VERTICES.length * 3);
+let tumbledAt = NaN;
+
+/** @param {number} time */
+function tumble(time) {
+  if (time === tumbledAt) return;
+  tumbledAt = time;
+  const cosA = Math.cos(time * 0.8);
+  const sinA = Math.sin(time * 0.8);
+  const cosB = Math.cos(time * 0.6);
+  const sinB = Math.sin(time * 0.6);
+  let k = 0;
+  for (const [vx, vy, vz] of ICOSAHEDRON_VERTICES) {
+    // Tumble about Y, then about X.
+    const zy = -vx * sinA + vz * cosA;
+    tumbled[k++] = vx * cosA + vz * sinA;
+    tumbled[k++] = vy * cosB - zy * sinB;
+    tumbled[k++] = vy * sinB + zy * cosB;
+  }
+}
+
+/**
+ * Each particle is a cluster of twelve small discs at the vertices of a slowly tumbling
+ * icosahedron, with sub-disc size modulated by the vertex's own depth.
  *
  * @type {Shape}
  */
 export const icosahedron = {
   id: 'icosahedron',
   label: 'Icosahedron',
-  draw(ctx, { sx, sy, radius, time }) {
+  trace(ctx, { sx, sy, radius, time }) {
     const clusterRadius = radius * 1.8;
-    const a = time * 0.8;
-    const b = time * 0.6;
-    const cosA = Math.cos(a);
-    const sinA = Math.sin(a);
-    const cosB = Math.cos(b);
-    const sinB = Math.sin(b);
-
-    ctx.beginPath();
-    for (const [vx, vy, vz] of ICOSAHEDRON_VERTICES) {
-      // Tumble about Y, then about X.
-      const xr = vx * cosA + vz * sinA;
-      const zy = -vx * sinA + vz * cosA;
-      const yr = vy * cosB - zy * sinB;
-      const zr = vy * sinB + zy * cosB;
-
-      const subRadius = radius * (0.7 + 0.28 * zr);
-      if (subRadius <= 0) continue;
-
-      const px = sx + xr * clusterRadius;
-      const py = sy + yr * clusterRadius;
-      ctx.moveTo(px + subRadius, py);
-      ctx.arc(px, py, subRadius, 0, Math.PI * 2);
+    if (clusterRadius < CLUSTER_LOD_RADIUS) {
+      traceDisc(ctx, sx, sy, clusterRadius);
+      return;
     }
-    ctx.fill();
+
+    tumble(time);
+    for (let k = 0; k < tumbled.length; k += 3) {
+      // 0.7 + 0.28 * z stays within [0.42, 0.98] on the unit sphere.
+      traceDisc(
+        ctx,
+        sx + tumbled[k] * clusterRadius,
+        sy + tumbled[k + 1] * clusterRadius,
+        radius * (0.7 + 0.28 * tumbled[k + 2])
+      );
+    }
   },
 };
-
 /** @type {Record<string, Shape>} */
 const REGISTRY = {
   [disc.id]: disc,

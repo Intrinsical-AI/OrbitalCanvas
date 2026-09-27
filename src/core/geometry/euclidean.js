@@ -1,72 +1,66 @@
 /**
  * Flat, zero-curvature geometry: a ring is a Euclidean circle in a plane of R³.
  *
+ * A geometry decides *where a particle is in space*, given a ring and an index. It knows
+ * nothing about cameras, canvases or projection — that is `view/projectors.js`.
+ *
  * The plane starts as XY and is rotated by `ring.tilt` about X, then by `ring.yaw`
  * about Z. The yaw is applied *after* the tilt on purpose — applying it first would be a
  * no-op, since a circle centred on the origin is invariant under rotation about its own
  * axis. Together the two angles sweep the ring's normal over the sphere as `seq` grows.
  *
- * This replaces the pre-refactor "3D" effect, which added two independent radian offsets
- * to `x` and `y` — a Lissajous distortion with no `z` component and no plane to speak of.
+ * @typedef {{x: number, y: number, z: number}} Vec3
  */
+
+/** Unit-circle table for the particle count currently in use. */
+let tableCount = 0;
+let tableCos = new Float64Array(0);
+let tableSin = new Float64Array(0);
+
+/** @param {number} count */
+function unitCircle(count) {
+  if (count === tableCount) return;
+  tableCount = count;
+  tableCos = new Float64Array(count);
+  tableSin = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const angle = (2 * Math.PI * i) / count;
+    tableCos[i] = Math.cos(angle);
+    tableSin[i] = Math.sin(angle);
+  }
+}
+
 export const euclidean = {
   id: 'euclidean',
   label: 'Euclidean',
 
-  /** Gaussian curvature. Zero here; the seam exists for spherical (>0) and hyperbolic (<0). */
-  curvature: 0,
-
   /**
-   * Circumference of a geodesic circle of radius `r`.
+   * Write a world-space particle position into a caller-owned object.
    *
-   * The general constant-curvature law is `2π · s_κ(r)` with
-   * `s_κ(r) = sin(√κ·r)/√κ` for κ>0, `r` for κ=0, `sinh(√−κ·r)/√−κ` for κ<0.
-   * Only the κ=0 branch is implemented; the signature is what curved geometries will share.
-   *
-   * @param {number} r
-   * @returns {number}
-   */
-  circumference(r) {
-    return 2 * Math.PI * r;
-  },
-
-  /**
-   * World-space position of particle `index` of `count` on `ring`.
+   * No trigonometry per particle: the particle angle comes from a table, the ring phase is
+   * added by angle addition, and the orientation terms are cached on the ring.
    *
    * @param {import('../ring.js').Ring} ring
    * @param {number} index
    * @param {number} count
-   * @returns {import('../vec3.js').Vec3}
+   * @param {Vec3} out
+   * @returns {Vec3}
    */
-  orbitPoint(ring, index, count) {
-    return this.orbitPointInto(ring, index, count, { x: 0, y: 0, z: 0 });
-  },
+  orbitPoint(ring, index, count, out) {
+    unitCircle(count);
+    const c = tableCos[index];
+    const s = tableSin[index];
+    // cos/sin(2πi/count + phase)
+    const cosTheta = c * ring.phaseCos - s * ring.phaseSin;
+    const sinTheta = s * ring.phaseCos + c * ring.phaseSin;
 
-  /**
-   * Write a world-space particle position into a caller-owned object. The scalar form keeps
-   * the exact rotate-X-then-rotate-Z order of `orbitPoint` without creating intermediate
-   * vectors in the render loop.
-   *
-   * @param {import('../ring.js').Ring} ring
-   * @param {number} index
-   * @param {number} count
-   * @param {import('../vec3.js').Vec3} out
-   * @returns {import('../vec3.js').Vec3}
-   */
-  orbitPointInto(ring, index, count, out) {
-    const theta = (2 * Math.PI * index) / count + ring.phase;
-    const localX = ring.radius * Math.cos(theta);
-    const localY = ring.radius * Math.sin(theta);
-    const tiltCos = Math.cos(ring.tilt);
-    const tiltSin = Math.sin(ring.tilt);
-    const tiltedY = localY * tiltCos;
-    const tiltedZ = localY * tiltSin;
-    const yawCos = Math.cos(ring.yaw);
-    const yawSin = Math.sin(ring.yaw);
+    const localX = ring.radius * cosTheta;
+    const localY = ring.radius * sinTheta;
+    const tiltedY = localY * ring.tiltCos;
 
-    out.x = localX * yawCos - tiltedY * yawSin;
-    out.y = localX * yawSin + tiltedY * yawCos;
-    out.z = tiltedZ;
+    out.x = localX * ring.yawCos - tiltedY * ring.yawSin;
+    out.y = localX * ring.yawSin + tiltedY * ring.yawCos;
+    out.z = localY * ring.tiltSin;
     return out;
   },
 };

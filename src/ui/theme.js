@@ -14,20 +14,9 @@ const CANVAS_COLORS = {
   light: { background: '#ffffff', foreground: '#000000' },
 };
 
-/**
- * Light/dark theme controller.
- *
- * Pre-refactor this was three disconnected pieces of dead code: a `#toggleTheme` button
- * with no listener, a `:root[data-theme="light"]` block that could never match, and an
- * `Animation.toggleMode()` only ever called from comments. They are now one thing, and the
- * canvas trail colour follows the document theme.
- */
+/** Light/dark theme, persistence and canvas palette. */
 export class Theme {
-  /**
-   * @param {(theme: string) => void} [onChange]
-   */
-  constructor(onChange) {
-    this.onChange = onChange;
+  constructor() {
     this.current = Theme.#initial();
     this.#apply();
   }
@@ -50,7 +39,6 @@ export class Theme {
     } catch {
       // Persisting is best-effort; the theme still applies for this session.
     }
-    this.onChange?.(this.current);
   }
 
   toggle() {

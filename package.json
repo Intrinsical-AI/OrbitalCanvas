@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MrCabss69/OrbitalCanvas.git"
+    "url": "git+https://github.com/Intrinsical-AI/OrbitalCanvas.git"
   },
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke:export": "node --test scripts/smoke-export.mjs",
+    "smoke": "node --test --test-timeout=45000 scripts/smoke-browser.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.61.1",
     "eslint": "^10.8.0",
     "globals": "^16.5.0",
     "patch-package": "8.0.1",

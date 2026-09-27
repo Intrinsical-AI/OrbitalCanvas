@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createConfig } from '../src/core/config.js';
+import { DEFAULTS } from '../src/core/config.js';
 import { Scene } from '../src/core/scene.js';
 import { generativeSpawner, getSpawner, staticSpawner } from '../src/core/spawner.js';
 
@@ -32,7 +32,7 @@ describe('static spawner', () => {
   });
 
   it('spreads radii evenly across the full range', () => {
-    const config = createConfig({ ringCount: 5, initialRadius: 400, minRadius: 40 });
+    const config = { ...DEFAULTS, ringCount: 5, initialRadius: 400, minRadius: 40 };
     const radii = staticSpawner.initial(config).map((r) => r.radius);
     expect(radii[0]).toBeCloseTo(400, 9);
     expect(radii.at(-1)).toBeCloseTo(40, 9);
@@ -41,19 +41,19 @@ describe('static spawner', () => {
   });
 
   it('handles a single ring without dividing by zero', () => {
-    const config = createConfig({ ringCount: 1, initialRadius: 400, minRadius: 40 });
+    const config = { ...DEFAULTS, ringCount: 1, initialRadius: 400, minRadius: 40 };
     const rings = staticSpawner.initial(config);
     expect(rings).toHaveLength(1);
     expect(rings[0].radius).toBe(400);
   });
 
   it('is fully deterministic', () => {
-    const config = createConfig({ ringCount: 8 });
+    const config = { ...DEFAULTS, ringCount: 8 };
     expect(staticSpawner.initial(config)).toEqual(staticSpawner.initial(config));
   });
 
   it('accumulates tilt across the set', () => {
-    const config = createConfig({ ringCount: 4, planeAngle: 0.2 });
+    const config = { ...DEFAULTS, ringCount: 4, planeAngle: 0.2 };
     const tilts = staticSpawner.initial(config).map((r) => r.tilt);
     expect(tilts).toEqual([0, 0.2, 0.4, 0.6000000000000001]);
   });
@@ -141,8 +141,7 @@ describe('generative spawner', () => {
       maxRings: 4,
       fadeDuration: 0.1,
     });
-    // A single huge delta is clamped to MAX_DT, so at most a bounded number of rings
-    // can be owed; the pre-refactor code had no such guard on any of this.
+    // Even when a caller supplies a huge delta, the spawn policy drops excess debt.
     scene.step(600);
     expect(scene.rings.filter((r) => !r.fading).length).toBeLessThanOrEqual(4);
   });

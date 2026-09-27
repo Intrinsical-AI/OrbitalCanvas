@@ -6,14 +6,15 @@ import {
   PerspectiveProjector,
   TopOrthoProjector,
 } from '../src/view/projectors.js';
-import { vec3 } from '../src/core/vec3.js';
+
+const vec3 = (x, y, z) => ({ x, y, z });
 
 const VIEWPORT = { width: 800, height: 600 };
 const FIT_RADIUS = 400;
 
 /**
  * @param {import('../src/view/projectors.js').Projector} projector
- * @param {import('../src/core/vec3.js').Vec3} p
+ * @param {import('../src/core/geometry/euclidean.js').Vec3} p
  */
 function project(projector, p) {
   return projector.project(p, createProjected());
@@ -133,6 +134,22 @@ describe('PerspectiveProjector — the 3D view', () => {
     }
   });
 
+  it('zooms the entire focal plane in and out, including particle size', () => {
+    const camera = new Camera({ yaw: 0, pitch: 0, distance: 1400 });
+    const projector = make(camera);
+    const point = vec3(200, 100, 0);
+    const initial = project(projector, point);
+    camera.zoomBy(2);
+    const farther = project(projector, point);
+    expect(farther.sx - 400).toBeCloseTo((initial.sx - 400) / 2, 10);
+    expect(farther.sy - 300).toBeCloseTo((initial.sy - 300) / 2, 10);
+    expect(farther.scale).toBeCloseTo(initial.scale / 2, 10);
+    camera.zoomBy(0.25);
+    const closer = project(projector, point);
+    expect(closer.sx - 400).toBeCloseTo((initial.sx - 400) * 2, 10);
+    expect(closer.scale).toBeCloseTo(initial.scale * 2, 10);
+  });
+
   it('keeps the origin centred regardless of camera orientation', () => {
     for (const camera of [
       new Camera({ yaw: 0, pitch: 0 }),
@@ -194,10 +211,12 @@ describe('Camera', () => {
   });
 
   it('writes camera-space coordinates into a reusable output object', () => {
-    const camera = new Camera({ yaw: 0.8, pitch: -0.3 });
+    const camera = new Camera({ yaw: Math.PI / 2, pitch: Math.PI / 2 });
     const out = { x: 0, y: 0, z: 0 };
     const point = vec3(40, -20, 90);
-    expect(camera.toCameraSpaceInto(point, out)).toBe(out);
-    expect(out).toEqual(camera.toCameraSpace(point));
+    expect(camera.toCameraSpace(point, out)).toBe(out);
+    expect(out.x).toBeCloseTo(-20, 10);
+    expect(out.y).toBeCloseTo(90, 10);
+    expect(out.z).toBeCloseTo(40, 10);
   });
 });
