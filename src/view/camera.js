@@ -6,7 +6,7 @@ const MAX_PITCH = 89 * DEG;
 /**
  * Orbit camera for the 3D view.
  *
- * The camera looks at the origin from a yaw/pitch direction at a fixed distance. Rather
+ * The camera looks at the origin from a yaw/pitch direction at an adjustable distance. Rather
  * than build a full view matrix, world points are brought into camera space by undoing the
  * camera's own rotation — for an orbit camera that is exactly `rotateZ(-yaw)` followed by
  * `rotateX(-pitch)`.
@@ -15,6 +15,9 @@ const MAX_PITCH = 89 * DEG;
  * projection has no camera state to respect.
  */
 export class Camera {
+  /** Rotation terms for the yaw/pitch they were computed at; see `#rotation`. */
+  #cache = { yaw: NaN, pitch: NaN, yawCos: 1, yawSin: 0, pitchCos: 1, pitchSin: 0 };
+
   /**
    * @param {object} [options]
    * @param {number} [options.yaw] Radians.
@@ -25,8 +28,27 @@ export class Camera {
     this.yaw = yaw;
     this.pitch = pitch;
     this.distance = distance;
+    /** Fixed focal length preserves initial framing while distance changes produce zoom. */
+    this.focalLength = distance;
     /** Radians per second applied by `update` when auto-orbit is enabled. */
     this.orbitSpeed = 0.12;
+  }
+
+  /**
+   * Trigonometry of the current orientation, recomputed only when yaw or pitch has changed
+   * since the last call, i.e. at most once per frame rather than once per particle.
+   */
+  get #rotation() {
+    const r = this.#cache;
+    if (r.yaw !== this.yaw || r.pitch !== this.pitch) {
+      r.yaw = this.yaw;
+      r.pitch = this.pitch;
+      r.yawCos = Math.cos(this.yaw);
+      r.yawSin = Math.sin(this.yaw);
+      r.pitchCos = Math.cos(this.pitch);
+      r.pitchSin = Math.sin(this.pitch);
+    }
+    return r;
   }
 
   /**
@@ -56,27 +78,12 @@ export class Camera {
 
   /**
    * Transform a world point into camera space, where +Z points towards the viewer.
-   * @param {import('../core/vec3.js').Vec3} p
-   * @returns {import('../core/vec3.js').Vec3}
+   * @param {import('../core/geometry/euclidean.js').Vec3} p
+   * @param {import('../core/geometry/euclidean.js').Vec3} out Caller-owned output.
+   * @returns {import('../core/geometry/euclidean.js').Vec3}
    */
-  toCameraSpace(p) {
-    return this.toCameraSpaceInto(p, { x: 0, y: 0, z: 0 });
-  }
-
-  /**
-   * Write camera-space coordinates into a caller-owned object. The public allocating method
-   * above remains available for tests and general callers; the projector uses this form for
-   * every particle in a frame.
-   *
-   * @param {import('../core/vec3.js').Vec3} p
-   * @param {import('../core/vec3.js').Vec3} out
-   * @returns {import('../core/vec3.js').Vec3}
-   */
-  toCameraSpaceInto(p, out) {
-    const yawCos = Math.cos(this.yaw);
-    const yawSin = Math.sin(this.yaw);
-    const pitchCos = Math.cos(this.pitch);
-    const pitchSin = Math.sin(this.pitch);
+  toCameraSpace(p, out) {
+    const { yawCos, yawSin, pitchCos, pitchSin } = this.#rotation;
 
     // rotateZ(p, -yaw), then rotateX(result, -pitch), expanded without intermediates.
     const yawedX = p.x * yawCos + p.y * yawSin;

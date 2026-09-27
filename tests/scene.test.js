@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { CONTROLS, rangeBounds } from '../src/core/config.js';
 import { PARTICLE_BUDGET, Scene } from '../src/core/scene.js';
-import { length, sub } from '../src/core/vec3.js';
+
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
 
 /**
  * Collect every particle position in the scene.
  * @param {Scene} scene
- * @returns {import('../src/core/vec3.js').Vec3[]}
+ * @returns {import('../src/core/geometry/euclidean.js').Vec3[]}
  */
 function positions(scene) {
   const out = [];
-  scene.forEachParticle((p) => out.push(p));
+  scene.forEachParticle((p) => out.push({ ...p }));
   return out;
 }
 
@@ -41,8 +44,7 @@ describe('Scene construction', () => {
     expect(scene.particleCount).toBe(24);
   });
 
-  it('rejects an unknown geometry or spawn mode at construction', () => {
-    expect(() => new Scene({ geometry: 'nope' })).toThrow(/Unknown geometry/);
+  it('rejects an unknown spawn mode at construction', () => {
     expect(() => new Scene({ spawnMode: 'nope' })).toThrow(/Unknown spawn mode/);
   });
 });
@@ -56,14 +58,14 @@ describe('Scene.step — phase-based time', () => {
     run(scene, 30);
 
     const before = positions(scene);
-    scene.set('speed', 3);
+    scene.setMany([['speed', 3]]);
     scene.step(1 / 60);
     const after = positions(scene);
 
     for (let i = 0; i < before.length; i++) {
       // One frame at 3 rad/s on a 380-unit ring moves ~19 units. A rescale of 30 s of
       // absolute time would move the particle across the whole ring instead.
-      expect(length(sub(after[i], before[i]))).toBeLessThan(25);
+      expect(distance(after[i], before[i])).toBeLessThan(25);
     }
   });
 
@@ -71,11 +73,11 @@ describe('Scene.step — phase-based time', () => {
     const slow = new Scene({ spawnMode: 'static', ringCount: 1, numPoints: 4, speed: 0.1 });
     const start = positions(slow)[0];
     slow.step(0.01);
-    const small = length(sub(positions(slow)[0], start));
+    const small = distance(positions(slow)[0], start);
 
     const other = new Scene({ spawnMode: 'static', ringCount: 1, numPoints: 4, speed: 0.1 });
     other.step(0.02);
-    const large = length(sub(positions(other)[0], start));
+    const large = distance(positions(other)[0], start);
 
     expect(large).toBeGreaterThan(small);
     expect(large / small).toBeCloseTo(2, 1);
@@ -89,12 +91,11 @@ describe('Scene.step — phase-based time', () => {
     expect(positions(a)).toEqual(positions(b));
   });
 
-  it('clamps oversized frame deltas so a backgrounded tab does not jump', () => {
-    const a = new Scene({ spawnMode: 'static', ringCount: 1, numPoints: 4 });
-    const b = new Scene({ spawnMode: 'static', ringCount: 1, numPoints: 4 });
-    a.step(0.1);
-    b.step(30);
-    expect(positions(b)).toEqual(positions(a));
+  it('integrates the caller-provided delta without applying a second time policy', () => {
+    const scene = new Scene({ spawnMode: 'static', ringCount: 1, speed: 2 });
+    scene.step(0.5);
+    expect(scene.time).toBe(0.5);
+    expect(scene.rings[0].phase).toBe(1);
   });
 
   it('ignores zero and negative deltas', () => {
@@ -113,10 +114,10 @@ describe('Scene.step — phase-based time', () => {
   });
 });
 
-describe('Scene.set', () => {
+describe('Scene.setMany', () => {
   it('rebuilds when a structural key changes', () => {
     const scene = new Scene({ spawnMode: 'static', ringCount: 3 });
-    expect(scene.set('ringCount', 9)).toBe(true);
+    expect(scene.setMany([['ringCount', 9]])).toBe(true);
     expect(scene.rings).toHaveLength(9);
   });
 
@@ -124,8 +125,12 @@ describe('Scene.set', () => {
     const scene = new Scene({ spawnMode: 'static', ringCount: 3 });
     run(scene, 2);
     const phases = scene.rings.map((r) => r.phase);
-    expect(scene.set('color', '#00ff00')).toBe(false);
-    expect(scene.set('lineWidth', 4)).toBe(false);
+    expect(
+      scene.setMany([
+        ['color', '#00ff00'],
+        ['lineWidth', 4],
+      ])
+    ).toBe(false);
     expect(scene.rings.map((r) => r.phase)).toEqual(phases);
   });
 
@@ -133,7 +138,7 @@ describe('Scene.set', () => {
     const scene = new Scene({ spawnMode: 'static', ringCount: 3 });
     run(scene, 2);
     const time = scene.time;
-    expect(scene.set('ringCount', 3)).toBe(false);
+    expect(scene.setMany([['ringCount', 3]])).toBe(false);
     expect(scene.time).toBe(time);
   });
 
@@ -157,17 +162,17 @@ describe('Scene.set', () => {
 
   it('switching spawn mode rebuilds the ring set', () => {
     const scene = new Scene({ spawnMode: 'generative' });
-    expect(scene.set('spawnMode', 'static')).toBe(true);
+    expect(scene.setMany([['spawnMode', 'static']])).toBe(true);
     expect(scene.rings).toHaveLength(scene.config.ringCount);
   });
 
   it('batches structural changes into one rebuild', () => {
     const scene = new Scene({ spawnMode: 'static', ringCount: 3 });
-    const rebuild = scene.rebuild.bind(scene);
+    const restart = scene.restart.bind(scene);
     let rebuilds = 0;
-    scene.rebuild = () => {
+    scene.restart = () => {
       rebuilds += 1;
-      return rebuild();
+      return restart();
     };
 
     expect(
@@ -182,6 +187,17 @@ describe('Scene.set', () => {
     expect(scene.config.numPoints).toBe(32);
     expect(scene.config.lineWidth).toBe(3);
   });
+
+  it.each(['static', 'generative'])('updates existing ring planes in %s mode', (spawnMode) => {
+    const scene = new Scene({ spawnMode, ringCount: 3, numPoints: 4, circleInterval: 0.2 });
+    run(scene, 1);
+    const before = positions(scene);
+    expect(scene.setMany([['planeAngle', Math.PI / 2]])).toBe(true);
+    if (spawnMode === 'generative') run(scene, 1);
+    expect(scene.rings[1].tilt).toBe(Math.PI / 2);
+    expect(scene.rings[1].yaw).toBe(Math.PI / 2);
+    expect(positions(scene)).not.toEqual(before);
+  });
 });
 
 describe('particle budget', () => {
@@ -192,12 +208,41 @@ describe('particle budget', () => {
     expect(safe.particleCount).toBeLessThanOrEqual(PARTICLE_BUDGET);
   });
 
-  it('flags configurations that will not hold frame rate', () => {
-    const ok = new Scene({ spawnMode: 'static', ringCount: 4, numPoints: 50 });
-    expect(ok.isOverBudget()).toBe(false);
+  it.each([[1 / 144], [1 / 60], [1 / 30], [0.1], [0.01, 0.1, 1 / 60, 0.037]])(
+    'reserves fading capacity at Safe maxima with frame deltas %j',
+    (...deltas) => {
+      const bounds = (key) => rangeBounds(CONTROLS.find((control) => control.key === key));
+      const scene = new Scene({
+        spawnMode: 'generative',
+        numPoints: bounds('numPoints').max,
+        maxRings: bounds('maxRings').max,
+        circleInterval: bounds('circleInterval').min,
+      });
+      let peak = 0;
+      let frame = 0;
+      for (let time = 0; time < 120;) {
+        const dt = deltas[frame++ % deltas.length];
+        scene.step(dt);
+        time += dt;
+        peak = Math.max(peak, scene.particleCount);
+      }
+      expect(peak).toBeGreaterThan(scene.config.maxRings * scene.config.numPoints);
+      expect(peak).toBeLessThanOrEqual(PARTICLE_BUDGET);
+    }
+  );
 
-    const heavy = new Scene({ spawnMode: 'static', ringCount: 40, numPoints: 200 });
-    expect(heavy.particleCount).toBeGreaterThan(PARTICLE_BUDGET);
-    expect(heavy.isOverBudget()).toBe(true);
+  it('rebuilds immediately when a lower ring budget replaces an over-budget scene', () => {
+    const scene = new Scene({
+      spawnMode: 'generative',
+      numPoints: 128,
+      maxRings: 48,
+      circleInterval: 0.2,
+    });
+    run(scene, 15);
+    expect(scene.particleCount).toBeGreaterThan(PARTICLE_BUDGET);
+    const safeMax = rangeBounds(CONTROLS.find((control) => control.key === 'maxRings')).max;
+    expect(scene.setMany([['maxRings', safeMax]])).toBe(true);
+    expect(scene.particleCount).toBeLessThanOrEqual(PARTICLE_BUDGET);
+    expect(scene.time).toBe(0);
   });
 });

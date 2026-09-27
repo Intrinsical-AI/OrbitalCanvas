@@ -16,6 +16,7 @@ describe('Recorder', () => {
   let instance;
   let constructorError;
   let startError;
+  let defaultMimeType;
   let download;
 
   class Capture extends EventTarget {
@@ -23,10 +24,11 @@ describe('Recorder', () => {
       return true;
     }
 
-    constructor() {
+    constructor(_stream, options) {
       super();
       if (constructorError) throw constructorError;
       instance = this;
+      this.mimeType = options?.mimeType ?? defaultMimeType;
       this.state = 'inactive';
     }
 
@@ -37,7 +39,11 @@ describe('Recorder', () => {
 
     stop() {
       this.state = 'inactive';
-      this.dispatchEvent(Object.assign(new Event('dataavailable'), { data: new Blob(['clip']) }));
+      this.dispatchEvent(
+        Object.assign(new Event('dataavailable'), {
+          data: new Blob(['clip'], { type: this.mimeType }),
+        })
+      );
       this.dispatchEvent(new Event('stop'));
     }
   }
@@ -48,6 +54,7 @@ describe('Recorder', () => {
     frames = new Map();
     constructorError = null;
     startError = null;
+    defaultMimeType = 'video/webm';
     instance = null;
     track = { stop: vi.fn() };
     canvas = { captureStream: vi.fn(() => ({ getTracks: () => [track] })) };
@@ -113,6 +120,52 @@ describe('Recorder', () => {
     expect(frames.size).toBe(0);
     expect(recorder.recording).toBe(false);
     expect(download).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['video/webm;codecs=vp9', 'webm'],
+    ['video/mp4;codecs=avc1.42e01e', 'mp4'],
+  ])('downloads the browser-selected %s container as .%s', async (mimeType, extension) => {
+    vi.spyOn(Capture, 'isTypeSupported').mockReturnValue(false);
+    defaultMimeType = mimeType;
+    const recorder = new Recorder(canvas);
+    const result = recorder.record({ fps: 30, duration: 1, renderFrame: vi.fn() });
+    await frame(1100);
+    await expect(result).resolves.toMatchObject({
+      filename: expect.stringMatching(new RegExp(`\\.${extension}$`)),
+      strategy: 'mediarecorder',
+    });
+    expect(URL.createObjectURL.mock.calls[0][0].type).toBe(mimeType);
+    expect(download.mock.instances[0].download).toMatch(new RegExp(`\\.${extension}$`));
+    expect(track.stop).toHaveBeenCalledOnce();
+  });
+
+  it('uses the chunk MIME if MediaRecorder does not expose its format', async () => {
+    vi.spyOn(Capture, 'isTypeSupported').mockReturnValue(false);
+    defaultMimeType = '';
+    const recorder = new Recorder(canvas);
+    const result = recorder.record({ fps: 30, duration: 1, renderFrame: vi.fn() });
+    instance.dispatchEvent(
+      Object.assign(new Event('dataavailable'), {
+        data: new Blob(['mp4'], { type: 'video/mp4' }),
+      })
+    );
+    await frame(1100);
+    await expect(result).resolves.toMatchObject({ filename: expect.stringMatching(/\.mp4$/) });
+    expect(URL.createObjectURL.mock.calls[0][0].type).toBe('video/mp4');
+  });
+
+  it('rejects an unknown capture format instead of mislabeling the download', async () => {
+    vi.spyOn(Capture, 'isTypeSupported').mockReturnValue(false);
+    defaultMimeType = 'video/unknown';
+    const recorder = new Recorder(canvas);
+    const result = recorder.record({ fps: 30, duration: 1, renderFrame: vi.fn() });
+    const rejection = expect(result).rejects.toThrow('Unsupported capture format: video/unknown');
+    await frame(1100);
+    await rejection;
+    expect(download).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(recorder.recording).toBe(false);
   });
 
   it('cancels capture without waiting for another animation frame', async () => {

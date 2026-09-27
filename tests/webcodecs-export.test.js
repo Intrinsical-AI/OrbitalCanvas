@@ -94,4 +94,21 @@ describe('WebCodecs export', () => {
     ).rejects.toBe(error);
     expect(mocks.cancel).toHaveBeenCalledOnce();
   });
+
+  it('does not encode a resized frame when rendering requests cancellation', async () => {
+    let aborted = false;
+    await expect(
+      encode(
+        options({
+          renderFrame: () => {
+            aborted = true;
+          },
+          isAborted: () => aborted,
+        })
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.add).not.toHaveBeenCalled();
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+  });
 });

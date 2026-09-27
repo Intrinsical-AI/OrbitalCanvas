@@ -6,11 +6,11 @@ import { createRing } from './ring.js';
  * Both policies answer the same question — *which rings exist at time t* — and hand the
  * `Scene` an identical `Ring[]`. Only the answer differs:
  *
- *  - `generative` reproduces the original endless inward spiral, but bounded: rings spawn
- *    on an interval and the oldest fades out once the budget is exceeded. Pre-refactor this
- *    was unbounded (~38 rings × 72 particles × 12 arcs ≈ 32k arcs/frame).
- *  - `static` builds a fixed set up front and never changes it. Deterministic, which is
- *    what makes frame-exact video export and snapshot tests possible.
+ *  - `generative` is an endless inward spiral with a bounded ring count: rings spawn on an
+ *    interval and the oldest fades out once the budget is exceeded.
+ *  - `static` builds a fixed set up front and never changes it.
+ *
+ * Both policies are deterministic for the same config and sequence of frame deltas.
  *
  * @typedef {object} Spawner
  * @property {string} id
@@ -20,7 +20,7 @@ import { createRing } from './ring.js';
  *
  * @typedef {object} SpawnState
  * @property {import('./ring.js').Ring[]} rings
- * @property {number} seq Next ring sequence number.
+ * @property {number} seq Last issued ring sequence number.
  * @property {number} nextRadius Radius the next spawned ring will use.
  * @property {number} sinceSpawn Seconds since the last spawn.
  */
@@ -47,13 +47,13 @@ export const staticSpawner = {
     const { ringCount, initialRadius, minRadius, planeAngle } = config;
     const rings = [];
     for (let i = 0; i < ringCount; i++) {
-      rings.push({
-        ...createRing({
+      rings.push(
+        createRing({
           seq: i,
           radius: staticRadius(i, ringCount, initialRadius, minRadius),
           planeAngle,
-        }),
-      });
+        })
+      );
     }
     return rings;
   },

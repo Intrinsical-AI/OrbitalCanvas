@@ -7,6 +7,7 @@ import {
   QUALITY_HIGH,
   WebMOutputFormat,
 } from 'mediabunny';
+import { cancelled } from './recorder.js';
 
 /**
  * WebCodecs export, isolated in its own module.
@@ -73,12 +74,13 @@ export async function encode({ canvas, codec, fps, duration, renderFrame, onProg
     output.addVideoTrack(source, { frameRate: fps });
     await output.start();
     for (let frame = 0; frame < totalFrames; frame++) {
-      if (isAborted()) throw new DOMException('Recording cancelled', 'AbortError');
+      if (isAborted()) throw cancelled();
       renderFrame(dt);
+      if (isAborted()) throw cancelled();
       // Awaiting is the backpressure signal: it resolves once the encoder and writer are
       // ready for more, and it yields so the progress indicator can repaint.
       await source.add(frame * dt, dt);
-      if (isAborted()) throw new DOMException('Recording cancelled', 'AbortError');
+      if (isAborted()) throw cancelled();
       onProgress((frame + 1) / totalFrames);
     }
     await output.finalize();

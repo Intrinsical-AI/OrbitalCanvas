@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint
+        entry: npm run lint
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: prettier
+        name: Prettier check
+        entry: npm run format:check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: vitest
+        name: Unit tests
+        entry: npm test
+        language: system
+        pass_filenames: false
+        always_run: true

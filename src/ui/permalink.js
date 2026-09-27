@@ -91,7 +91,7 @@ export function decodeConfig(text) {
     const raw = params.get(spec.key);
 
     if (spec.type === 'checkbox') {
-      values[spec.key] = raw === '1' || raw === 'true';
+      values[spec.key] = raw === '1';
       continue;
     }
     if (spec.type === 'select') {
@@ -100,7 +100,7 @@ export function decodeConfig(text) {
       continue;
     }
     if (spec.type === 'color') {
-      if (/^#[0-9a-f]{6}$/i.test(raw)) values[spec.key] = raw.toLowerCase();
+      if (raw === 'auto' || /^#[0-9a-f]{6}$/i.test(raw)) values[spec.key] = raw.toLowerCase();
       continue;
     }
     // Range. `toInternal` snaps and clamps, but it cannot rescue a non-number.
@@ -117,7 +117,7 @@ export function decodeConfig(text) {
  *
  * @returns {{values: Record<string, unknown>, meta: Meta}}
  */
-export function loadStoredConfig() {
+function loadStoredConfig() {
   try {
     return decodeConfig(localStorage.getItem(CONFIG_STORAGE_KEY) ?? '');
   } catch {
@@ -140,16 +140,15 @@ export function storeConfig(config, meta) {
 /**
  * Resolve the configuration to boot with.
  *
- * Precedence matches the existing `initialView` rule in `main.js`: the URL wins, then the
- * stored session, then nothing (leaving `DEFAULTS` in place).
+ * The URL hash wins, then the stored session, then nothing (leaving `DEFAULTS` in place).
  *
  * @param {Location} location
- * @returns {{values: Record<string, unknown>, meta: Meta, fromUrl: boolean}}
+ * @returns {{values: Record<string, unknown>, meta: Meta}}
  */
 export function initialConfig(location) {
   const fromHash = decodeConfig(location.hash ?? '');
   if (Object.keys(fromHash.values).length || Object.keys(fromHash.meta).length) {
-    return { ...fromHash, fromUrl: true };
+    return fromHash;
   }
-  return { ...loadStoredConfig(), fromUrl: false };
+  return loadStoredConfig();
 }
