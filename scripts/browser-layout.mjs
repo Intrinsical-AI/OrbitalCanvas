@@ -88,12 +88,18 @@ export function layoutCases(get) {
       await page.locator('#canvas').focus();
       await page.keyboard.press('?');
       await expect(page.locator('#shortcuts')).toBeVisible();
-      for (let i = 0; i < 12; i++) await page.keyboard.press('Tab');
-      assert.ok(
-        await page.evaluate(() =>
-          document.querySelector('#shortcuts').contains(document.activeElement)
-        )
-      );
+      for (const key of ['Tab', 'Shift+Tab']) {
+        for (let i = 0; i < 12; i++) {
+          await page.keyboard.press(key);
+          const focus = await page.evaluate(() => ({
+            inside: document.querySelector('#shortcuts').contains(document.activeElement),
+            activeId: document.activeElement.id,
+            activeTag: document.activeElement.tagName,
+            documentFocused: document.hasFocus(),
+          }));
+          assert.ok(focus.inside, JSON.stringify({ key, step: i, ...focus }));
+        }
+      }
       await page.locator('#shortcutsEnabled').uncheck();
       await page.keyboard.press('Escape');
       await page.locator('#canvas').focus();

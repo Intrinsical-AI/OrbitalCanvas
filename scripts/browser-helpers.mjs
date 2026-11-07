@@ -39,7 +39,24 @@ export async function harness() {
         const page = await context.newPage();
         page.setDefaultTimeout(12000);
         const errors = [];
-        page.on('pageerror', (e) => errors.push(e.message));
+        page.on('pageerror', (error) => {
+          errors.push(error.message);
+          process.stderr.write('Browser page error: ' + error.stack + '\n');
+        });
+        page.on('console', (message) => {
+          if (['warning', 'error'].includes(message.type()))
+            process.stderr.write('Browser console: ' + message.text() + '\n');
+        });
+        await page.addInitScript(() => {
+          window.captureExportClicks = 0;
+          document.addEventListener(
+            'click',
+            (event) => {
+              if (event.target.closest?.('#exportButton')) window.captureExportClicks++;
+            },
+            true
+          );
+        });
         if (fallback)
           await page.addInitScript(() =>
             Object.defineProperty(window, 'VideoEncoder', { value: undefined, configurable: true })

@@ -735,6 +735,26 @@ export class App {
     }
   }
   keydown(event) {
+    const modal = this.el.captureDialog.open
+      ? this.el.captureDialog
+      : this.el.shortcuts.open
+        ? this.el.shortcuts
+        : null;
+    if (modal && event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      const fields = [
+        ...modal.querySelectorAll('button,input,select,textarea,a[href],[tabindex]'),
+      ].filter((field) => !field.disabled && field.tabIndex >= 0 && field.getClientRects().length);
+      const index = fields.indexOf(this.doc.activeElement);
+      const next =
+        index < 0
+          ? event.shiftKey
+            ? fields.length - 1
+            : 0
+          : (index + (event.shiftKey ? -1 : 1) + fields.length) % fields.length;
+      event.preventDefault();
+      (fields[next] ?? modal).focus();
+      return;
+    }
     if (event.key === 'Escape') {
       if (this.exporting) {
         event.preventDefault();

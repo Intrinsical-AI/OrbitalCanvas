@@ -1,9 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect } from './browser-helpers.mjs';
+
+async function closeCapture(h, page, context) {
+  try {
+    const state = await page.evaluate(() => {
+      const field = (id) => document.getElementById(id);
+      const app = window.smokeApp;
+      return {
+        name: 'capture_state',
+        clicks: window.captureExportClicks,
+        exporting: app?.exporting,
+        recording: app?.recorder?.recording,
+        fallback: app?.recorder?.fallback,
+        specification: app?.captureSpec,
+        error: field('captureError').textContent,
+        progress: field('recordingIndicator').textContent,
+        exportDisabled: field('exportButton').disabled,
+        videoEncoder: typeof VideoEncoder,
+        mediaRecorder: typeof MediaRecorder,
+        supportedMimeTypes:
+          typeof MediaRecorder === 'undefined'
+            ? []
+            : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/mp4'].filter((type) =>
+                MediaRecorder.isTypeSupported(type)
+              ),
+        preview: [field('capturePreview').width, field('capturePreview').height],
+      };
+    });
+    h.receipts.push(state);
+    process.stdout.write('Capture diagnostics: ' + JSON.stringify(state) + '\n');
+  } catch (error) {
+    process.stdout.write('Capture diagnostics unavailable: ' + error.message + '\n');
+  } finally {
+    await context.close();
+  }
+}
 
 async function setup(h, options = {}) {
   const result = await h.page({ viewport: { width: 640, height: 560 }, ...options });
@@ -92,7 +127,7 @@ export function captureCases(get) {
       assert.deepEqual(await readFile(file), Buffer.from(expected, 'base64'));
       get().receipts.push({ name: 'exact_png', file });
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('built WebCodecs handles flush failure, releases encoders and retries successfully', async (t) => {
@@ -165,7 +200,7 @@ export function captureCases(get) {
       await videoReceipt(get(), download, 'webcodecs-recovery');
       assert.deepEqual(errors, []);
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('detached video survives editor resize and DPR without advancing the editor', async (t) => {
@@ -215,34 +250,80 @@ export function captureCases(get) {
       );
       assert.deepEqual(errors, []);
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('fresh export sessions reproduce frame zero after arbitrary editor motion', async () => {
     const { page, context } = await setup(get());
     try {
-      assert.equal(
-        await page.evaluate(async () => {
-          const { CaptureScene } = await import('/src/ui/capture.js');
-          const doc = window.smokeApp.captureDocument;
-          const a = new CaptureScene(doc, { width: 320, height: 320 });
-          const zero = a.canvas.toDataURL();
-          a.render(0);
-          if (zero !== a.canvas.toDataURL()) return false;
-          for (let i = 0; i < 30; i++) a.render(1 / 30);
-          const first = a.canvas.toDataURL();
-          window.smokeApp.scene.step(20);
-          const b = new CaptureScene(doc, { width: 320, height: 320 });
-          for (let i = 0; i < 30; i++) b.render(1 / 30);
-          return (
-            first === b.canvas.toDataURL() &&
-            b.scene.rings.filter((r) => !r.fading).length === doc.parameters.maxRings
-          );
-        }),
-        true
-      );
+      const result = await page.evaluate(async () => {
+        const { CaptureScene } = await import('/src/ui/capture.js');
+        const doc = window.smokeApp.captureDocument;
+        const a = new CaptureScene(doc, { width: 320, height: 320 });
+        const zero = a.canvas.toDataURL();
+        a.render(0);
+        const repeatedZero = a.canvas.toDataURL();
+        for (let i = 0; i < 30; i++) a.render(1 / 30);
+        const first = a.canvas.toDataURL();
+        window.smokeApp.scene.step(20);
+        const b = new CaptureScene(doc, { width: 320, height: 320 });
+        for (let i = 0; i < 30; i++) b.render(1 / 30);
+        const second = b.canvas.toDataURL();
+        const pixels = async (url) => {
+          const image = new Image();
+          image.src = url;
+          await image.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = 320;
+          canvas.height = 320;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(image, 0, 0);
+          return ctx.getImageData(0, 0, 320, 320).data;
+        };
+        const comparePixels = async (left, right) => {
+          const x = await pixels(left),
+            y = await pixels(right);
+          let differingPixels = 0,
+            maxDelta = 0;
+          for (let i = 0; i < x.length; i += 4) {
+            let differs = false;
+            for (let channel = 0; channel < 4; channel++) {
+              const delta = Math.abs(x[i + channel] - y[i + channel]);
+              maxDelta = Math.max(maxDelta, delta);
+              differs ||= delta !== 0;
+            }
+            if (differs) differingPixels++;
+          }
+          return { differingPixels, maxDelta };
+        };
+        return {
+          zeroPngEqual: zero === repeatedZero,
+          timelinePngEqual: first === second,
+          liveRings: b.scene.rings.filter((r) => !r.fading).length,
+          expectedLiveRings: doc.parameters.maxRings,
+          zeroPixels: await comparePixels(zero, repeatedZero),
+          timelinePixels: await comparePixels(first, second),
+          images:
+            zero === repeatedZero && first === second
+              ? []
+              : [
+                  ['capture-zero.png', zero],
+                  ['capture-zero-repeated.png', repeatedZero],
+                  ['capture-first.png', first],
+                  ['capture-second.png', second],
+                ],
+        };
+      });
+      const { images, ...diagnostic } = result;
+      for (const [name, url] of images)
+        await writeFile(path.join(get().artifacts, name), Buffer.from(url.split(',')[1], 'base64'));
+      get().receipts.push({ name: 'capture_determinism', ...diagnostic });
+      process.stdout.write('Capture determinism: ' + JSON.stringify(diagnostic) + '\n');
+      assert.equal(result.zeroPngEqual, true, JSON.stringify(diagnostic));
+      assert.equal(result.timelinePngEqual, true, JSON.stringify(diagnostic));
+      assert.equal(result.liveRings, result.expectedLiveRings, JSON.stringify(diagnostic));
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('MediaRecorder captures motion from a detached canvas and cancels on Escape', async () => {
@@ -263,7 +344,7 @@ export function captureCases(get) {
       );
       assert.deepEqual(errors, []);
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('destroying the editor cancels capture and releases tracks without a download', async () => {
@@ -284,7 +365,7 @@ export function captureCases(get) {
       );
       assert.equal(downloads, 0);
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
   test('capture work limits are actionable without silently changing input', async () => {
@@ -301,7 +382,7 @@ export function captureCases(get) {
       await page.locator('#durationInput').dispatchEvent('change');
       await expect(page.locator('#exportButton')).toBeEnabled();
     } finally {
-      await context.close();
+      await closeCapture(get(), page, context);
     }
   });
 }
