@@ -7,10 +7,10 @@ import {
   TopOrthoProjector,
 } from '../src/view/projectors.js';
 
-const vec3 = (x, y, z) => ({ x, y, z });
+const vec3 = (x, y, z) => ({ x: x / 400, y: y / 400, z: z / 400 });
 
 const VIEWPORT = { width: 800, height: 600 };
-const FIT_RADIUS = 400;
+const FIT_RADIUS = 1;
 
 /**
  * @param {import('../src/view/projectors.js').Projector} projector
@@ -102,7 +102,7 @@ describe('TopOrthoProjector — the 2D view', () => {
 
 describe('PerspectiveProjector — the 3D view', () => {
   /** @returns {PerspectiveProjector} */
-  const make = (camera = new Camera({ yaw: 0, pitch: 0, distance: 1000 })) => {
+  const make = (camera = new Camera({ yaw: 0, pitch: 0, zoom: 1 })) => {
     const p = new PerspectiveProjector(camera);
     p.configure(VIEWPORT, FIT_RADIUS);
     return p;
@@ -135,7 +135,7 @@ describe('PerspectiveProjector — the 3D view', () => {
   });
 
   it('zooms the entire focal plane in and out, including particle size', () => {
-    const camera = new Camera({ yaw: 0, pitch: 0, distance: 1400 });
+    const camera = new Camera({ yaw: 0, pitch: 0, zoom: 1 });
     const projector = make(camera);
     const point = vec3(200, 100, 0);
     const initial = project(projector, point);
@@ -162,7 +162,7 @@ describe('PerspectiveProjector — the 3D view', () => {
   });
 
   it('clips points behind the near plane instead of projecting them', () => {
-    const projector = make(new Camera({ yaw: 0, pitch: 0, distance: 100 }));
+    const projector = make(new Camera({ yaw: 0, pitch: 0, zoom: 3 }));
     const behind = project(projector, vec3(0, 0, 500));
     expect(behind.visible).toBe(false);
     expect(behind.scale).toBe(0);
@@ -171,7 +171,7 @@ describe('PerspectiveProjector — the 3D view', () => {
   it('agrees with the 2D view when the camera looks straight down the Z axis', () => {
     // pitch = 0 means the camera sits on +Z looking at the origin, so a point on the
     // XY plane must project to the same place both ways up to the perspective scale.
-    const camera = new Camera({ yaw: 0, pitch: 0, distance: 1000 });
+    const camera = new Camera({ yaw: 0, pitch: 0, zoom: 1 });
     const perspective = make(camera);
     const ortho = new TopOrthoProjector();
     ortho.configure(VIEWPORT, FIT_RADIUS);
@@ -197,9 +197,9 @@ describe('Camera', () => {
   it('clamps zoom to a sane range', () => {
     const camera = new Camera();
     for (let i = 0; i < 200; i++) camera.zoomBy(0.5);
-    expect(camera.distance).toBeGreaterThanOrEqual(300);
+    expect(camera.distance).toBeGreaterThanOrEqual(1400 / 380 / 3);
     for (let i = 0; i < 200; i++) camera.zoomBy(2);
-    expect(camera.distance).toBeLessThanOrEqual(6000);
+    expect(camera.distance).toBeLessThanOrEqual(1400 / 380 / 0.25);
   });
 
   it('only auto-orbits when asked', () => {
@@ -207,7 +207,7 @@ describe('Camera', () => {
     camera.update(1, false);
     expect(camera.yaw).toBe(0);
     camera.update(1, true);
-    expect(camera.yaw).toBeCloseTo(camera.orbitSpeed, 12);
+    expect(camera.yaw).toBeCloseTo(0.12, 12);
   });
 
   it('writes camera-space coordinates into a reusable output object', () => {
@@ -215,8 +215,8 @@ describe('Camera', () => {
     const out = { x: 0, y: 0, z: 0 };
     const point = vec3(40, -20, 90);
     expect(camera.toCameraSpace(point, out)).toBe(out);
-    expect(out.x).toBeCloseTo(-20, 10);
-    expect(out.y).toBeCloseTo(90, 10);
-    expect(out.z).toBeCloseTo(40, 10);
+    expect(out.x).toBeCloseTo(-20 / 400, 10);
+    expect(out.y).toBeCloseTo(90 / 400, 10);
+    expect(out.z).toBeCloseTo(40 / 400, 10);
   });
 });

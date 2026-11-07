@@ -3,464 +3,260 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Orbital Canvas</title>
+    <meta name="theme-color" content="#000000" />
     <meta
       name="description"
-      content="Generative particle animation on a 3D orbital scene, with switchable perspective and top-down projections."
+      content="Explore orbital compositions, shape their motion and capture reproducible films."
     />
+    <title>Orbital Canvas</title>
+    <script>
+      (() => {
+        const system = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        let appearance = system;
+        try {
+          const hash = new URLSearchParams(location.hash.slice(1));
+          if (location.hash) {
+            if (hash.get('v') === '2' && ['dark', 'light'].includes(hash.get('appearance')))
+              appearance = hash.get('appearance');
+          } else {
+            const stored = JSON.parse(localStorage.getItem('orbital-canvas:document:v2') || 'null');
+            if (stored?.version === 2 && ['dark', 'light'].includes(stored.appearance))
+              appearance = stored.appearance;
+          }
+        } catch {
+          /* Use the system appearance when storage is unavailable. */
+        }
+        document.documentElement.dataset.theme = appearance;
+        document.querySelector('meta[name="theme-color"]').content =
+          appearance === 'light' ? '#ffffff' : '#000000';
+      })();
+    </script>
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='1.6'%3E%3Cellipse cx='16' cy='16' rx='11' ry='4.6'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='4.6' transform='rotate(60 16 16)'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='4.6' transform='rotate(120 16 16)'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.6' fill='%23fff'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32'/%3E%3Cellipse cx='16' cy='16' rx='12' ry='5' fill='none' stroke='white'/%3E%3Cellipse cx='16' cy='16' rx='12' ry='5' fill='none' stroke='white' transform='rotate(60 16 16)'/%3E%3C/svg%3E"
     />
   </head>
   <body>
-    <!-- The artwork bleeds to all four edges. Every other element floats above it.
-         Focusable, because the camera is a real control: arrow keys orbit it and +/- zoom.
-         No `role="img"` — that would claim the element is non-interactive. -->
     <canvas
       id="canvas"
       tabindex="0"
-      aria-label="Orbital particle animation. Arrow keys orbit the camera, plus and minus zoom."
+      aria-label="Orbital composition. Arrow keys orbit; plus and minus zoom."
     ></canvas>
-
-    <!-- Chrome dims when the pointer goes idle; any pointer, key or focus event wakes it. -->
-    <div class="hud" id="hud">
-      <!-- ===== Top left: identity ===== -->
-      <div class="hud__zone hud__zone--tl">
+    <div id="hud" class="hud">
+      <header id="topBar" class="topbar">
         <div class="mark">
-          <span class="mark__name">Orbital Canvas</span>
-          <span class="mark__meta" id="markMeta">euclidean · perspective</span>
+          <span class="mark__name">Orbital Canvas</span
+          ><span class="mark__meta">A study in motion</span>
         </div>
-      </div>
-
-      <!-- ===== Top right: projection, theme, source ===== -->
-      <div class="hud__zone hud__zone--tr">
-        <div class="segmented" id="viewToggle" role="group" aria-label="Projection mode">
-          <button type="button" data-value="3d" aria-pressed="true" title="Perspective view (3)">
-            3D
-          </button>
-          <button type="button" data-value="2d" aria-pressed="false" title="Top-down view (2)">
-            2D
-          </button>
+        <div class="topbar__actions">
+          <div id="viewToggle" class="segmented" role="group" aria-label="Projection">
+            <button type="button" data-value="3d" aria-pressed="true">3D</button
+            ><button type="button" data-value="2d" aria-pressed="false">2D</button>
+          </div>
+          <details id="moreMenu" class="menu">
+            <summary aria-label="More actions">•••</summary>
+            <div class="menu__body">
+              <button type="button" id="shareButton">Share configuration</button>
+              <button type="button" id="restartButton">Restart introduction</button>
+              <button type="button" id="cameraResetButton">Recenter camera</button>
+              <button type="button" id="themeButton">Switch to light appearance</button>
+              <button type="button" id="fullscreenButton">Full screen</button>
+              <button type="button" id="hideButton">Hide UI</button>
+              <button type="button" id="shortcutsButton">Help &amp; shortcuts</button>
+            </div>
+          </details>
         </div>
-
-        <!-- `title` duplicates `aria-label` deliberately: the label is for assistive tech, the
-             title is the visible hover tooltip. Where either is dynamic, main.js writes both
-             in the same place so they cannot disagree. -->
-        <button
-          type="button"
-          class="btn btn--icon"
-          id="themeButton"
-          data-state="dark"
-          aria-label="Switch to light theme"
-          title="Switch to light theme"
-        >
-          <!-- The icon shows the theme you would switch to, not the one you are in. -->
-          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.5" />
-            <path
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              d="M12 2.5v2.2M12 19.3v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"
-            />
-          </svg>
-          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-
-        <button
-          type="button"
-          class="btn btn--icon"
-          id="shortcutsButton"
-          aria-controls="shortcuts"
-          aria-expanded="false"
-          aria-label="Keyboard shortcuts"
-          title="Keyboard shortcuts (?)"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M9.2 9a2.9 2.9 0 1 1 3.8 2.8c-.6.2-1 .8-1 1.4v.6"
-            />
-            <circle cx="12" cy="17.2" r="1" fill="currentColor" />
-          </svg>
-        </button>
-
-        <a
-          class="btn btn--icon"
-          href="https://github.com/MrCabss69/OrbitalCanvas"
-          target="_blank"
-          rel="noopener"
-          aria-label="Source on GitHub"
-          title="Source on GitHub"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="currentColor"
-              d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"
-            />
-          </svg>
-        </a>
-      </div>
-
-      <!-- ===== Bottom: transport ===== -->
-      <div class="hud__zone hud__zone--bottom">
-        <button
-          type="button"
-          class="btn btn--text"
-          id="panelToggle"
-          aria-controls="panel"
-          aria-expanded="false"
-          title="Parameters (P)"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              d="M4 8h10M18 8h2M4 16h4M12 16h8"
-            />
-            <circle cx="16" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.5" />
-            <circle cx="10" cy="16" r="2" fill="none" stroke="currentColor" stroke-width="1.5" />
-          </svg>
-          <span>Parameters</span>
-        </button>
-
-        <div class="transport">
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="playButton"
-            data-state="playing"
-            aria-label="Pause animation"
-            title="Pause (Space)"
-          >
-            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="currentColor" d="M8 5v14l11-7z" />
-            </svg>
-            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="currentColor" d="M7.5 5H10v14H7.5zm6.5 0h2.5v14H14z" />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="recordButton"
-            data-state="idle"
-            aria-label="Record video"
-            title="Record video"
-          >
-            <svg class="icon-record" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="5.5" fill="currentColor" />
-            </svg>
-            <svg class="icon-stop" viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="10" fill="currentColor" />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="snapshotButton"
-            aria-label="Save PNG"
-            title="Save PNG"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M12 4v11m0 0 4-4m-4 4-4-4M4 18v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1"
-              />
-            </svg>
-          </button>
-
-          <!-- Randomise and the presets are one-way doors without this: a scene worth keeping
-               is otherwise unrecoverable and unshareable. -->
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="shareButton"
-            aria-label="Copy link to this scene"
-            title="Copy link to this scene"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M10.5 13.5a4 4 0 0 0 5.7 0l2.6-2.6a4 4 0 1 0-5.7-5.7l-1.3 1.3M13.5 10.5a4 4 0 0 0-5.7 0l-2.6 2.6a4 4 0 1 0 5.7 5.7l1.3-1.3"
-              />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="randomizeButton"
-            aria-label="Randomise settings"
-            title="Randomise settings"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M3 7h4l10 10h4M3 17h4l2.5-2.5M21 7h-4l-2.5 2.5M19 5l2 2-2 2M19 15l2 2-2 2"
-              />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="restartButton"
-            aria-label="Restart current configuration"
-            title="Restart current configuration"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M5 5v5h5M5.8 10a7 7 0 1 1 1.8 7.4"
-              />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="resetButton"
-            aria-label="Restart with default configuration"
-            title="Restart with default configuration"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"
-              />
-            </svg>
-          </button>
-        </div>
-
-        <div class="export">
-          <label for="durationInput">Len</label>
-          <input
-            id="durationInput"
-            type="number"
-            min="1"
-            max="30"
-            step="1"
-            value="6"
-            aria-label="Export duration in seconds"
-          />
-          <span class="export__sep">/</span>
-          <label for="fpsInput">Fps</label>
-          <input
-            id="fpsInput"
-            type="number"
-            min="10"
-            max="60"
-            step="1"
-            value="60"
-            aria-label="Export frames per second"
-          />
-        </div>
-      </div>
-
-      <!-- ===== Overlays ===== -->
-      <p class="indicator" id="recordingIndicator" role="status" hidden></p>
-      <!-- The drawer carries the detailed budget warning, but it is invisible while the drawer
-           is closed — which is exactly when a randomised over-budget scene tanks the frame
-           rate with no explanation. This is the closed-drawer half of that signal. -->
-      <p class="notice" id="budgetNotice" role="status" aria-live="polite" hidden></p>
-      <p class="status" id="statusLine" role="status" aria-live="polite"></p>
-      <p class="hint">Drag or arrow keys to orbit · scroll to zoom</p>
-    </div>
-
-    <!-- ===== Parameter drawer ===== -->
-    <!-- `inert` is applied by main.js on every open/close; it is set here too so the
-         drawer is never focusable during the moment before the script runs. -->
-    <aside class="panel" id="panel" aria-label="Parameters" aria-hidden="true" inert>
-      <header class="panel__head">
-        <h2>Parameters</h2>
-        <button type="button" class="btn btn--icon" id="panelClose" aria-label="Close parameters">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              d="M6 6l12 12M18 6L6 18"
-            />
-          </svg>
-        </button>
       </header>
-
-      <div class="panel__body">
-        <p class="warning" id="budgetWarning" hidden></p>
-
-        <section class="group">
-          <h3 class="group__title">Preset</h3>
-          <select class="control__select" id="presetSelect" aria-label="Preset">
-            <!-- Options are generated from `PRESETS` in core/config.js. -->
-          </select>
-          <p class="group__note">
-            Hand-picked starting points. Randomise walks the whole parameter space uniformly, which
-            mostly lands on noise.
-          </p>
-        </section>
-
-        <section class="group">
-          <h3 class="group__title">Parameter range</h3>
-          <div
-            class="segmented segmented--fill"
-            id="rangeToggle"
-            role="group"
-            aria-label="Parameter range profile"
-          >
-            <button type="button" data-value="safe" aria-pressed="true">Safe</button>
-            <button type="button" data-value="experimental" aria-pressed="false">
-              Experimental
-            </button>
-          </div>
-          <p class="group__note">
-            Safe reserves room for fading rings. Experimental opens wider creative ranges and may
-            reduce frame rate.
-          </p>
-        </section>
-
-        <section class="group">
-          <h3 class="group__title">Ring lifecycle</h3>
-          <div
-            class="segmented segmented--fill"
-            id="spawnToggle"
-            role="group"
-            aria-label="Spawn mode"
-          >
-            <button type="button" data-value="generative" aria-pressed="true">Generative</button>
-            <button type="button" data-value="static" aria-pressed="false">Static</button>
-          </div>
-          <p class="group__note">
-            Generative spawns rings on an interval and fades out the oldest at the budget. Static
-            builds a fixed, deterministic set — use it for reproducible exports.
-          </p>
-        </section>
-
-        <!-- `Controls` generates the parameter sections here. -->
-        <div id="controlsPanel"></div>
-      </div>
-
-      <footer class="panel__foot">
-        <span>Orbital Canvas</span>
-        <span id="year"></span>
+      <footer id="bottomBar" class="bottom-bar">
+        <button type="button" id="playButton" aria-label="Pause animation">Pause</button>
+        <button type="button" id="presetsButton" aria-controls="panel" aria-expanded="false">
+          Presets
+        </button>
+        <button type="button" id="panelToggle" aria-controls="panel" aria-expanded="false">
+          Edit
+        </button>
+        <div class="desktop-actions">
+          <button type="button" data-action="undo" disabled aria-label="Undo">↶</button
+          ><button type="button" data-action="redo" disabled aria-label="Redo">↷</button
+          ><button type="button" data-action="variation">Variation</button
+          ><button type="button" data-action="share">Share</button>
+        </div>
+        <button type="button" id="captureButton" class="button--primary">Capture</button>
       </footer>
+      <div class="messages" aria-live="polite">
+        <p id="budgetNotice" hidden></p>
+        <p id="statusLine" role="status"></p>
+      </div>
+    </div>
+    <button type="button" id="showUiButton" hidden>Show controls · Esc</button>
+    <aside id="panel" class="panel" aria-label="Composition inspector" hidden>
+      <header class="panel__head">
+        <h1>Inspector</h1>
+        <div>
+          <button type="button" data-action="undo" disabled aria-label="Undo">↶</button
+          ><button type="button" data-action="redo" disabled aria-label="Redo">↷</button
+          ><button type="button" id="expandButton" aria-expanded="false">Expand</button
+          ><button type="button" id="panelClose" aria-label="Close inspector">×</button>
+        </div>
+      </header>
+      <nav class="panel__tabs" aria-label="Inspector pages">
+        <button type="button" id="exploreTab" aria-pressed="true">Explore</button
+        ><button type="button" id="editTab" aria-pressed="false">Edit</button>
+      </nav>
+      <div class="panel__body">
+        <section id="explorePage">
+          <p class="eyebrow">Starting points</p>
+          <div id="presetCards" class="preset-grid"></div>
+          <div class="preset-state">
+            <strong id="presetName">Default</strong
+            ><button type="button" id="reapplyButton">Reapply</button>
+          </div>
+          <div class="variation">
+            <h2>Create a variation</h2>
+            <label for="strengthSelect">Intensity</label
+            ><select id="strengthSelect">
+              <option value="0.05">Soft · 5%</option>
+              <option value="0.15" selected>Medium · 15%</option>
+              <option value="0.3">Strong · 30%</option></select
+            ><button type="button" id="variationButton">Create variation</button>
+            <p class="note">Keep your colour, shape and camera. Explore nearby values.</p>
+          </div>
+        </section>
+        <section id="editPage" hidden>
+          <div id="controlsPanel"></div>
+          <details class="control-group" id="sceneSettings">
+            <summary>Scene &amp; camera</summary>
+            <label class="field"
+              >Ring lifecycle<select id="spawnSelect">
+                <option value="generative">Generative</option>
+                <option value="static">Static</option>
+              </select></label
+            >
+            <label class="field"
+              >Parameter range<select id="rangeSelect">
+                <option value="safe">Safe</option>
+                <option value="experimental">Experimental</option>
+              </select></label
+            >
+            <p class="note">
+              Safe bounds particle count, including fading rings. Shape, glow and hardware also
+              affect frame rate.
+            </p>
+            <label id="orbitField" class="switch"
+              >Auto-orbit camera<input id="autoOrbitInput" type="checkbox"
+            /></label>
+            <button type="button" data-action="recenter">Recenter camera</button>
+          </details>
+          <button type="button" id="resetButton" class="restore">Restore defaults</button>
+        </section>
+      </div>
     </aside>
 
-    <div class="scrim" id="scrim" hidden></div>
-
-    <!-- ===== Shortcut sheet ===== -->
-    <!-- Lists only bindings that actually exist. `inert` while hidden, like the drawer. -->
-    <div
-      class="sheet"
-      id="shortcuts"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Keyboard shortcuts"
-      hidden
-      inert
-    >
-      <div class="sheet__card">
-        <header class="sheet__head">
-          <h2>Shortcuts</h2>
-          <button
-            type="button"
-            class="btn btn--icon"
-            id="shortcutsClose"
-            aria-label="Close shortcuts"
+    <dialog id="captureDialog" aria-labelledby="captureTitle" class="dialog dialog--capture">
+      <header>
+        <div>
+          <p class="eyebrow">Take it with you</p>
+          <h2 id="captureTitle">Capture</h2>
+        </div>
+        <button type="button" id="captureClose" aria-label="Close capture">×</button>
+      </header>
+      <div class="capture-layout">
+        <div class="capture-preview">
+          <canvas id="capturePreview" aria-label="Capture preview"></canvas>
+          <p id="capturePreviewNote" class="note"></p>
+        </div>
+        <div class="capture-settings">
+          <label class="field"
+            >Output<select id="captureType">
+              <option value="png">PNG · exact current frame</option>
+              <option value="video">Video · reproducible restart</option>
+            </select></label
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                d="M6 6l12 12M18 6L6 18"
-              />
-            </svg>
-          </button>
-        </header>
-
-        <dl class="sheet__list">
-          <div class="sheet__row">
-            <dt>Play / pause</dt>
-            <dd><kbd>Space</kbd></dd>
+          <div id="videoSettings" hidden>
+            <label class="field"
+              >Resolution<select id="resolutionInput">
+                <option value="screen">Screen</option>
+                <option value="landscape">1920 × 1080 · landscape</option>
+                <option value="square">1080 × 1080 · square</option>
+                <option value="portrait">1080 × 1920 · portrait</option>
+              </select></label
+            >
+            <label class="field"
+              >Duration (s)<input
+                id="durationInput"
+                type="number"
+                min="1"
+                max="120"
+                step="1"
+                value="6"
+            /></label>
+            <label class="field"
+              >FPS<select id="fpsInput">
+                <option>24</option>
+                <option selected>30</option>
+                <option>60</option>
+                <option>120</option>
+              </select></label
+            >
           </div>
-          <div class="sheet__row">
-            <dt>Perspective view</dt>
-            <dd><kbd>3</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>Top-down view</dt>
-            <dd><kbd>2</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>Parameters</dt>
-            <dd><kbd>P</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>Undo preset / randomise / reset</dt>
-            <dd><kbd>Ctrl</kbd><kbd>Z</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>This sheet</dt>
-            <dd><kbd>?</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>Close</dt>
-            <dd><kbd>Esc</kbd></dd>
-          </div>
-          <!-- Camera keys need the canvas focused, which is why they are called out. -->
-          <div class="sheet__row">
-            <dt>Orbit camera (canvas focused)</dt>
-            <dd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></dd>
-          </div>
-          <div class="sheet__row">
-            <dt>Zoom (canvas focused)</dt>
-            <dd><kbd>+</kbd><kbd>−</kbd></dd>
-          </div>
-        </dl>
+          <p id="captureSummary" class="note"></p>
+          <p id="captureError" role="alert"></p>
+          <progress
+            id="captureProgress"
+            value="0"
+            max="1"
+            aria-label="Export progress"
+            hidden
+          ></progress>
+          <p id="recordingIndicator" role="status"></p>
+          <button type="button" id="exportButton" class="button--primary">Save PNG</button>
+          <button type="button" id="cancelExportButton" hidden>Cancel export</button>
+          <button type="button" data-action="share">Share configuration</button>
+        </div>
       </div>
-    </div>
+    </dialog>
 
+    <dialog id="shortcuts" aria-labelledby="helpTitle" class="dialog">
+      <header>
+        <h2 id="helpTitle">Help &amp; shortcuts</h2>
+        <button type="button" id="shortcutsClose" aria-label="Close help">×</button>
+      </header>
+      <p>Drag to orbit. Pinch or scroll to zoom. Camera gestures apply in 3D.</p>
+      <dl class="shortcuts">
+        <dt>Play / pause · canvas focused</dt>
+        <dd>Space</dd>
+        <dt>Edit / presets</dt>
+        <dd>P</dd>
+        <dt>Projection</dt>
+        <dd>2 / 3</dd>
+        <dt>Full screen / hide UI</dt>
+        <dd>F / H</dd>
+        <dt>Variation / save PNG</dt>
+        <dd>R / S</dd>
+        <dt>Recenter camera</dt>
+        <dd>0 / double click</dd>
+        <dt>Undo / redo</dt>
+        <dd>Ctrl or ⌘ + Z / Shift + Z</dd>
+        <dt>Orbit / zoom · canvas focused</dt>
+        <dd>Arrows / + / −</dd>
+        <dt>Close / cancel / show UI</dt>
+        <dd>Esc</dd>
+      </dl>
+      <label class="switch"
+        >Character shortcuts<input type="checkbox" id="shortcutsEnabled" checked
+      /></label>
+      <label class="switch"
+        >Performance readout<input type="checkbox" id="diagnosticsEnabled"
+      /></label>
+      <p id="diagnostics" class="note" hidden></p>
+      <footer class="about">
+        <span id="versionLabel"></span
+        ><a href="https://github.com/MrCabss69/OrbitalCanvas" target="_blank" rel="noopener"
+          >Original source</a
+        >
+        <a href="./licenses/NOTICE.txt" target="_blank" rel="noopener">Licenses</a>
+      </footer>
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

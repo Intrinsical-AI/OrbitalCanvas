@@ -3,14 +3,16 @@
  * an orientation and a rotation phase.
  *
  * Orientation is stored as two angles rather than a matrix, together with their cosines and
- * sines: the angles are constant for a ring's lifetime, so the geometry never needs to
- * evaluate trigonometry per particle.
+ * sines: live geometry edits refresh the cache once per ring, so the geometry never needs
+ * to evaluate trigonometry per particle.
  */
 
 /**
  * @typedef {object} Ring
  * @property {number} seq Monotonic creation index. Drives tilt, yaw and direction, so a
  *   ring's orientation is a pure function of when it was created.
+ * @property {number} orientationSlot Bounded seq % 48 slot, independent of radius.
+ * @property {number} radialSlot Cyclic radial position, independent of orientation.
  * @property {number} radius World units.
  * @property {number} tilt Rotation about the X axis, radians.
  * @property {number} yaw Rotation about the Z axis applied after the tilt, radians.
@@ -39,8 +41,10 @@ export function createRing({ seq, radius, planeAngle }) {
   return syncRingTrig({
     seq,
     radius,
-    tilt: seq * planeAngle,
-    yaw: seq * planeAngle,
+    orientationSlot: seq % 48,
+    radialSlot: 0,
+    tilt: (seq % 48) * planeAngle,
+    yaw: (seq % 48) * planeAngle,
     direction: seq % 2 === 0 ? 1 : -1,
     phase: 0,
     opacity: 1,

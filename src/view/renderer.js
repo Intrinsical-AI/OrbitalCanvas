@@ -21,7 +21,7 @@ const CHORD_LEVELS = 4;
  * Every `GHOST_SWEEP_FRAMES` frames an additive fill of the background at `GHOST_NUDGE`
  * steps stalled pixels up to it. Against black the additive fill adds nothing.
  */
-const GHOST_SWEEP_FRAMES = 30;
+const GHOST_SWEEP_SECONDS = 0.5;
 const GHOST_NUDGE = 10 / 255;
 
 /**
@@ -59,7 +59,7 @@ export class Renderer {
     this.chordBuckets = Array.from({ length: CHORD_LEVELS }, () => []);
     /** Reused shape argument; shape.trace() consumes it synchronously. */
     this.shapeState = { sx: 0, sy: 0, radius: 0, time: 0 };
-    this.frames = 0;
+    this.sweepElapsed = 0;
   }
 
   /**
@@ -67,34 +67,50 @@ export class Renderer {
    *
    * @param {import('../core/scene.js').Scene} scene
    * @param {import('./projectors.js').Projector} projector
-   * @param {{background: string, foreground: string, trailAlpha: number}} theme
+   * @param {{background: string, foreground: string}} theme
    */
-  render(scene, projector, theme) {
-    projector.configure(this.viewport, scene.config.initialRadius);
-
-    this.#drawBackground(theme);
+  render(scene, projector, theme, dt = 0) {
+    this.sceneHalfLife = scene.config.trailHalfLife;
+    this.#drawBackground(theme, dt);
+    const frame = this.viewport.frame ?? {
+      x: 0,
+      y: 0,
+      width: this.viewport.width,
+      height: this.viewport.height,
+    };
+    const scale = Math.min(frame.width, frame.height) / 720;
+    projector.configure({ width: frame.width / scale, height: frame.height / scale }, 1);
+    this.ctx.save();
+    this.ctx.translate(frame.x, frame.y);
+    this.ctx.scale(scale, scale);
     this.#project(scene, projector);
     this.#drawParticles(scene, theme);
     this.#drawEdges(scene, theme);
+    this.ctx.restore();
   }
 
   /**
-   * Translucent full-canvas fill. Lower `trailAlpha` leaves longer motion trails.
+   * Time-based translucent fill. Longer half-life leaves longer motion trails.
    *
-   * @param {{background: string, trailAlpha: number}} theme
+   * @param {{background: string}} theme
    */
-  #drawBackground(theme) {
+  #drawBackground(theme, dt) {
     const { ctx, viewport } = this;
-    this.frames += 1;
+    this.sweepElapsed += dt;
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = theme.background;
-    ctx.globalAlpha = theme.trailAlpha;
+    ctx.globalAlpha = trailOpacity(this.sceneHalfLife ?? 0, dt);
     ctx.fillRect(0, 0, viewport.width, viewport.height);
-    if (this.frames % GHOST_SWEEP_FRAMES === 0) {
+    if (this.sweepElapsed + 1e-9 >= GHOST_SWEEP_SECONDS) {
       ctx.globalCompositeOperation = 'lighter';
       ctx.globalAlpha = GHOST_NUDGE;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
+      this.sweepElapsed = Math.max(
+        0,
+        this.sweepElapsed -
+          Math.floor((this.sweepElapsed + 1e-9) / GHOST_SWEEP_SECONDS) * GHOST_SWEEP_SECONDS
+      );
     }
     ctx.restore();
   }
@@ -102,8 +118,8 @@ export class Renderer {
   /**
    * Project every particle into the slot pool and assign it to an opacity level.
    *
-   * The 3D depth cue is normalised to the fixed extent of the scene (`±initialRadius`, the
-   * largest ring radius) rather than to each frame's depth range, so a particle's shade does
+   * The 3D depth cue is normalised to the fixed extent of the scene (radius 1)
+   * rather than to each frame's depth range, so a particle's shade does
    * not shift when other rings spawn or rotate.
    *
    * @param {import('../core/scene.js').Scene} scene
@@ -112,7 +128,7 @@ export class Renderer {
   #project(scene, projector) {
     for (const bucket of this.buckets) bucket.length = 0;
     const depthCue = projector.sortsByDepth;
-    const extent = Math.max(scene.config.initialRadius, 1);
+    const extent = 1;
     const { size } = scene.config;
 
     let i = 0;
@@ -233,7 +249,7 @@ export class Renderer {
     const { ctx } = this;
     ctx.save();
     ctx.strokeStyle = config.chromaticChords
-      ? `hsl(${(timeMs / 20) % 360}, 100%, 70%)`
+      ? `hsl(${(timeMs / 20) % 360}, 100%, ${theme.background === '#ffffff' ? 35 : 70}%)`
       : theme.foreground;
     ctx.lineWidth = config.lineWidth;
 
@@ -269,5 +285,10 @@ export class Renderer {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.restore();
+    this.sweepElapsed = 0;
   }
+}
+
+export function trailOpacity(halfLife, dt) {
+  return halfLife <= 0 ? 1 : 1 - Math.pow(2, -Math.max(0, dt) / halfLife);
 }

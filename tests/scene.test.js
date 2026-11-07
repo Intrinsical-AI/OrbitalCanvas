@@ -27,10 +27,10 @@ function run(scene, seconds, dt = 1 / 60) {
 }
 
 describe('Scene construction', () => {
-  it('starts with one ring in generative mode', () => {
+  it('starts with the full ring set in generative mode', () => {
     const scene = new Scene({ spawnMode: 'generative' });
-    expect(scene.rings).toHaveLength(1);
-    expect(scene.rings[0].radius).toBe(scene.config.initialRadius);
+    expect(scene.rings).toHaveLength(scene.config.maxRings);
+    expect(scene.rings[0].radius).toBe(1);
   });
 
   it('starts with exactly ringCount rings in static mode', () => {
@@ -65,7 +65,7 @@ describe('Scene.step — phase-based time', () => {
     for (let i = 0; i < before.length; i++) {
       // One frame at 3 rad/s on a 380-unit ring moves ~19 units. A rescale of 30 s of
       // absolute time would move the particle across the whole ring instead.
-      expect(distance(after[i], before[i])).toBeLessThan(25);
+      expect(distance(after[i], before[i])).toBeLessThan(0.06);
     }
   });
 
@@ -192,10 +192,10 @@ describe('Scene.setMany', () => {
     const scene = new Scene({ spawnMode, ringCount: 3, numPoints: 4, circleInterval: 0.2 });
     run(scene, 1);
     const before = positions(scene);
-    expect(scene.setMany([['planeAngle', Math.PI / 2]])).toBe(true);
-    if (spawnMode === 'generative') run(scene, 1);
-    expect(scene.rings[1].tilt).toBe(Math.PI / 2);
-    expect(scene.rings[1].yaw).toBe(Math.PI / 2);
+    expect(scene.setMany([['planeAngle', Math.PI / 2]])).toBe(false);
+
+    expect(scene.rings[1].tilt).toBe((scene.rings[1].orientationSlot * Math.PI) / 2);
+    expect(scene.rings[1].yaw).toBe((scene.rings[1].orientationSlot * Math.PI) / 2);
     expect(positions(scene)).not.toEqual(before);
   });
 });
@@ -231,7 +231,7 @@ describe('particle budget', () => {
     }
   );
 
-  it('rebuilds immediately when a lower ring budget replaces an over-budget scene', () => {
+  it('enforces a lower Safe budget without restarting the clock', () => {
     const scene = new Scene({
       spawnMode: 'generative',
       numPoints: 128,
@@ -241,8 +241,10 @@ describe('particle budget', () => {
     run(scene, 15);
     expect(scene.particleCount).toBeGreaterThan(PARTICLE_BUDGET);
     const safeMax = rangeBounds(CONTROLS.find((control) => control.key === 'maxRings')).max;
-    expect(scene.setMany([['maxRings', safeMax]])).toBe(true);
+    const time = scene.time;
+    expect(scene.setMany([['maxRings', safeMax]])).toBe(false);
+    scene.enforceBudget();
     expect(scene.particleCount).toBeLessThanOrEqual(PARTICLE_BUDGET);
-    expect(scene.time).toBe(0);
+    expect(scene.time).toBe(time);
   });
 });

@@ -4,7 +4,6 @@
  * every page load.
  */
 import {
-  CONTROL_BY_KEY,
   CONTROLS,
   DEFAULTS,
   PRESETS,
@@ -87,7 +86,7 @@ export function validatePresets() {
         problems.push(`preset "${preset.id}" sets unknown config key "${key}"`);
         continue;
       }
-      const spec = CONTROL_BY_KEY.get(key);
+      const spec = CONTROLS.find((control) => control.key === key);
       if (!spec || spec.type !== 'range') continue;
       // Round-trip through the safe profile: anything that moves is out of range.
       const round = toInternal(spec, toDisplay(spec, value, 'safe'), 'safe');

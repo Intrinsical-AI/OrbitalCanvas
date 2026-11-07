@@ -32,19 +32,19 @@ describe('static spawner', () => {
   });
 
   it('spreads radii evenly across the full range', () => {
-    const config = { ...DEFAULTS, ringCount: 5, initialRadius: 400, minRadius: 40 };
+    const config = { ...DEFAULTS, ringCount: 5, innerRatio: 0.1 };
     const radii = staticSpawner.initial(config).map((r) => r.radius);
-    expect(radii[0]).toBeCloseTo(400, 9);
-    expect(radii.at(-1)).toBeCloseTo(40, 9);
+    expect(radii[0]).toBeCloseTo(1, 9);
+    expect(radii.at(-1)).toBeCloseTo(0.1, 9);
     const gaps = radii.slice(1).map((r, i) => radii[i] - r);
     for (const gap of gaps) expect(gap).toBeCloseTo(gaps[0], 9);
   });
 
   it('handles a single ring without dividing by zero', () => {
-    const config = { ...DEFAULTS, ringCount: 1, initialRadius: 400, minRadius: 40 };
+    const config = { ...DEFAULTS, ringCount: 1, innerRatio: 0.1 };
     const rings = staticSpawner.initial(config);
     expect(rings).toHaveLength(1);
-    expect(rings[0].radius).toBe(400);
+    expect(rings[0].radius).toBe(1);
   });
 
   it('is fully deterministic', () => {
@@ -67,6 +67,7 @@ describe('generative spawner', () => {
       maxRings: 40,
       fadeDuration: 0.5,
     });
+    scene.restart('intro');
     expect(scene.rings).toHaveLength(1);
     run(scene, 3.1);
     expect(scene.rings.length).toBeGreaterThanOrEqual(4);
@@ -122,15 +123,14 @@ describe('generative spawner', () => {
     const scene = new Scene({
       spawnMode: 'generative',
       circleInterval: 0.05,
-      radiusStep: 100,
-      initialRadius: 380,
-      minRadius: 40,
+      ringSpacing: 0.25,
+      innerRatio: 0.1,
       maxRings: 30,
       fadeDuration: 0.1,
     });
     run(scene, 10);
     const radii = scene.rings.map((r) => r.radius);
-    expect(Math.max(...radii)).toBeGreaterThan(200);
+    expect(Math.max(...radii)).toBeGreaterThan(0.5);
     expect(scene.rings.length).toBeGreaterThan(1);
   });
 

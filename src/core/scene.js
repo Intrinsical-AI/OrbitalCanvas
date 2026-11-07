@@ -1,9 +1,9 @@
-import { DEFAULTS, REBUILD_KEYS } from './config.js';
+import { DEFAULTS } from './config.js';
 import { euclidean } from './geometry/euclidean.js';
-import { getSpawner } from './spawner.js';
-import { stepRing } from './ring.js';
+import { evictOldest, getSpawner, layoutRing, radialLevels } from './spawner.js';
+import { stepRing, syncRingTrig } from './ring.js';
 
-/** Heuristic warning threshold; actual rendering cost depends on style and hardware. */
+/** Hard particle limit in Safe mode; rendering cost still depends on style and hardware. */
 export const PARTICLE_BUDGET = 4000;
 
 /**
@@ -40,22 +40,21 @@ export class Scene {
   /**
    * Discard all rings and rebuild from the current config. Resets simulated time.
    */
-  restart() {
+  restart(population = 'full') {
     this.spawner = getSpawner(this.config.spawnMode);
     this.time = 0;
 
-    const rings = this.spawner.initial(this.config);
+    const rings = this.spawner.initial(this.config, population);
     this.state = {
       rings,
       seq: rings.length ? rings[rings.length - 1].seq : 0,
-      nextRadius: this.config.initialRadius - this.config.radiusStep,
+      nextRadialSlot: rings.length % radialLevels(this.config),
       sinceSpawn: 0,
     };
   }
 
   /**
-   * Apply several config changes and rebuild at most once. This is used by reset, randomise,
-   * and range-profile clamping so a single user action cannot restart the scene repeatedly.
+   * Update geometry in place. Only a spawn-mode or static ring-count change rebuilds rings.
    *
    * @param {ReadonlyArray<readonly [string, unknown]>} changes
    * @returns {boolean} True if a rebuild was performed.
@@ -66,11 +65,27 @@ export class Scene {
     for (const [key, value] of changes) {
       if (this.config[key] === value) continue;
       this.config[key] = value;
-      rebuild ||= REBUILD_KEYS.includes(key);
+      rebuild ||=
+        key === 'spawnMode' || (key === 'ringCount' && this.config.spawnMode === 'static');
     }
 
     if (rebuild) this.restart();
+    else {
+      this.rings.forEach((ring, index) => {
+        ring.tilt = ring.orientationSlot * this.config.planeAngle;
+        ring.yaw = ring.tilt;
+        syncRingTrig(ring);
+        layoutRing(ring, this.config, index);
+      });
+      this.state.nextRadialSlot %= radialLevels(this.config);
+      if (this.config.spawnMode === 'generative') evictOldest(this.rings, this.config.maxRings);
+    }
     return rebuild;
+  }
+
+  enforceBudget() {
+    const capacity = Math.floor(PARTICLE_BUDGET / this.config.numPoints);
+    if (this.rings.length > capacity) this.state.rings.splice(0, this.rings.length - capacity);
   }
 
   /**

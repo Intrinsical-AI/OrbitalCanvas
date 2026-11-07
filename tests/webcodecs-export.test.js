@@ -7,12 +7,16 @@ const mocks = vi.hoisted(() => ({
   finalize: vi.fn(),
   cancel: vi.fn(),
 }));
+const packets = vi.hoisted(() => ({ notify: null }));
 
 vi.mock('mediabunny', () => ({
   BufferTarget: class {
     buffer = new Uint8Array([1]);
   },
   CanvasSource: class {
+    constructor(canvas, options) {
+      packets.notify = options.onEncodedPacket;
+    }
     add = mocks.add;
   },
   Output: class {
@@ -50,6 +54,7 @@ describe('WebCodecs export', () => {
     const input = options();
     const result = await encode(input);
     expect(input.renderFrame).toHaveBeenCalledTimes(60);
+    expect(input.renderFrame).toHaveBeenNthCalledWith(1, 0);
     expect(input.renderFrame).toHaveBeenLastCalledWith(1 / 30);
     expect(mocks.add).toHaveBeenNthCalledWith(1, 0, 1 / 30);
     expect(mocks.add).toHaveBeenLastCalledWith(59 / 30, 1 / 30);
@@ -57,6 +62,22 @@ describe('WebCodecs export', () => {
     expect(mocks.finalize).toHaveBeenCalledOnce();
     expect(mocks.cancel).not.toHaveBeenCalled();
     expect(result.blob.size).toBeGreaterThan(0);
+  });
+
+  it('bounds the encoded payload while frames are being written', async () => {
+    mocks.add.mockImplementation(async () => packets.notify({ data: new Uint8Array(6) }));
+    await expect(encode(options({ payloadLimit: 10 }))).rejects.toThrow('60 MiB limit');
+    expect(mocks.add).toHaveBeenCalledTimes(2);
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('rejects payload overflow emitted during the final encoder flush', async () => {
+    mocks.finalize.mockImplementation(async () => packets.notify({ data: new Uint8Array(11) }));
+    await expect(encode(options({ fps: 1, duration: 1, payloadLimit: 10 }))).rejects.toThrow(
+      '60 MiB limit'
+    );
+    expect(mocks.cancel).toHaveBeenCalledOnce();
   });
 
   it.each(['start', 'add', 'finalize'])(

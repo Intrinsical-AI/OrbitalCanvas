@@ -1,6 +1,6 @@
 {
   "name": "orbital-canvas",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Generative particle animation on a 3D orbital scene, rendered to canvas with switchable 3D and top-down 2D projections.",
   "type": "module",
   "license": "MIT",
@@ -14,7 +14,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node --test --test-timeout=45000 scripts/smoke-browser.mjs",
+    "smoke": "node --test --test-timeout=120000 scripts/smoke-browser.mjs",
+    "smoke:firefox": "ORBITAL_BROWSER=firefox npm run smoke",
+    "smoke:webkit": "ORBITAL_BROWSER=webkit npm run smoke",
+    "visuals": "node scripts/generate-visuals.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -28,7 +31,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "1.61.1",
+    "@playwright/test": "1.65.0",
     "eslint": "^10.8.0",
     "globals": "^16.5.0",
     "patch-package": "8.0.1",

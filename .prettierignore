@@ -2,3 +2,6 @@ dist
 node_modules
 resources
 package-lock.json
+.claude/
+.codex/
+.agents/

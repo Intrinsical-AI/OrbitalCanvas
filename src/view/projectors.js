@@ -96,7 +96,7 @@ export class PerspectiveProjector {
     this.cx = 0;
     this.cy = 0;
     /** Points closer to the eye than this are clipped. */
-    this.near = 1;
+    this.near = 1 / 380;
     /** Reused camera-space point; project() consumes it synchronously. */
     this.cameraPoint = { x: 0, y: 0, z: 0 };
   }

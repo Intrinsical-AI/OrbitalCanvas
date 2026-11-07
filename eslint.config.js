@@ -34,7 +34,7 @@ export default [
     },
   },
   {
-    files: ['scripts/smoke-browser.mjs'],
+    files: ['scripts/*.mjs'],
     languageOptions: { globals: globals.browser },
   },
 ];

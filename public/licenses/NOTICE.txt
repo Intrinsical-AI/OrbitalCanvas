@@ -1,0 +1,21 @@
+Orbital Canvas third-party notices
+
+Inter Tight
+Copyright 2022 The Inter Project Authors
+https://github.com/rsms/inter-tight
+License: SIL Open Font License 1.1; see inter-tight.txt.
+
+JetBrains Mono
+Copyright 2020 The JetBrains Mono Project Authors
+https://github.com/JetBrains/JetBrainsMono
+License: SIL Open Font License 1.1; see jetbrains-mono.txt.
+
+Mediabunny 1.51.0
+Copyright (c) 2026-present, Vanilagy and contributors
+https://github.com/Vanilagy/mediabunny
+License: Mozilla Public License 2.0; see mediabunny.txt.
+The Mediabunny modifications in this distribution are also covered by MPL-2.0.
+The corresponding installed TypeScript source, including the cleanup patches,
+is provided in the mediabunny-src/ directory beside this notice.
+The maintained patch is available in the Orbital Canvas source repository:
+https://github.com/Intrinsical-AI/OrbitalCanvas/tree/main/patches
