@@ -11,7 +11,13 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      ORBITAL_BROWSER: ${{ matrix.browser }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -26,5 +32,13 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run smoke
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: browser-${{ matrix.browser }}
+          path: /tmp/orbital-browser-*
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 0

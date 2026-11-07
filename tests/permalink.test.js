@@ -1,188 +1,161 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CONTROLS, DEFAULTS, rangeBounds } from '../src/core/config.js';
+import { describe, expect, it } from 'vitest';
+import { CONTROLS, toDisplay } from '../src/core/config.js';
 import {
-  CONFIG_STORAGE_KEY,
-  decodeConfig,
-  encodeConfig,
-  initialConfig,
-  storeConfig,
+  DOCUMENT_KEY,
+  decodeDocument,
+  defaultDocument,
+  encodeDocument,
+  initialDocument,
+  storeDocument,
+  validateDocument,
+  readPreferences,
 } from '../src/ui/permalink.js';
 
-afterEach(() => vi.unstubAllGlobals());
-
-describe('encodeConfig / decodeConfig', () => {
-  it('round-trips every control key', () => {
-    const config = { ...DEFAULTS };
-    const { values } = decodeConfig(encodeConfig(config));
-
-    for (const spec of CONTROLS) {
-      expect(values, `missing ${spec.key}`).toHaveProperty(spec.key);
-      expect(values[spec.key], `mismatch on ${spec.key}`).toEqual(config[spec.key]);
-    }
+const memory = (value = null) => ({
+  getItem: () => value,
+  setItem(_key, next) {
+    value = next;
+  },
+});
+describe('document v2', () => {
+  it('round-trips all controls, camera and appearance', () => {
+    const doc = defaultDocument('light');
+    doc.parameters.color = '#123456';
+    doc.camera = { yaw: 1.2, pitch: -0.3, zoom: 2, autoOrbit: false };
+    const decoded = decodeDocument(encodeDocument(doc));
+    expect(decoded.parameters).toEqual(doc.parameters);
+    for (const key of ['yaw', 'pitch', 'zoom'])
+      expect(decoded.camera[key]).toBeCloseTo(doc.camera[key], 10);
+    expect(decoded.camera.autoOrbit).toBe(false);
+    expect(decoded.appearance).toBe('light');
   });
-
-  it('round-trips a non-default configuration', () => {
-    const config = {
-      ...DEFAULTS,
-      numPoints: 96,
-      speed: 1.25,
-      size: 4.5,
-      color: '#3fa9c2',
-      shape: 'disc',
-      glow: true,
-      chromaticChords: false,
-    };
-    const { values } = decodeConfig(encodeConfig(config));
-
-    expect(values.numPoints).toBe(96);
-    expect(values.speed).toBeCloseTo(1.25, 10);
-    expect(values.size).toBe(4.5);
-    expect(values.color).toBe('#3fa9c2');
-    expect(values.shape).toBe('disc');
-    expect(values.glow).toBe(true);
-    expect(values.chromaticChords).toBe(false);
+  it.each(CONTROLS.filter((s) => s.type === 'range'))('uses display units for $key', (spec) => {
+    const doc = defaultDocument();
+    const params = new URLSearchParams(encodeDocument(doc));
+    expect(Number(params.get(spec.key))).toBe(toDisplay(spec, doc.parameters[spec.key]));
   });
-
-  it('carries the view, spawn mode and range profile', () => {
-    const encoded = encodeConfig(
-      { ...DEFAULTS },
-      {
-        view: '2d',
-        spawnMode: 'static',
-        rangeMode: 'experimental',
-      }
+  it('preserves Experimental values', () => {
+    const doc = defaultDocument();
+    doc.rangeMode = 'experimental';
+    doc.parameters.numPoints = 240;
+    doc.parameters.ringSpacing = 0.005;
+    expect(decodeDocument(encodeDocument(doc)).parameters).toEqual(doc.parameters);
+  });
+  it.each(['', '#view=3d', '#v=1', '#v=3'])('rejects incompatible format %s', (text) => {
+    expect(() => decodeDocument(text)).toThrow();
+  });
+  it.each([
+    'speed=NaN',
+    'speed=',
+    'zoom=Infinity',
+    'glow=perhaps',
+    'appearance=blue',
+    'color=red',
+    'shape=unknown',
+    'spawn=nope',
+  ])('rejects invalid known field %s', (field) => {
+    expect(() => decodeDocument('#v=2&' + field)).toThrow();
+  });
+  it('bounds finite values and ignores unknown fields', () => {
+    const doc = decodeDocument('#v=2&numPoints=9999&pitch=1000&zoom=99&unknown=1');
+    expect(doc.parameters.numPoints).toBe(128);
+    expect(doc.camera.zoom).toBe(3);
+    expect(doc.camera.pitch).toBeCloseTo((89 * Math.PI) / 180, 10);
+    expect(doc.parameters).not.toHaveProperty('unknown');
+  });
+  it('keeps automatic colour distinct from explicit white', () => {
+    const auto = decodeDocument('#v=2&color=auto'),
+      white = decodeDocument('#v=2&color=%23FFFFFF');
+    expect(auto.parameters.color).toBe('auto');
+    expect(white.parameters.color).toBe('#ffffff');
+  });
+  it('does not let an invalid link open an unrelated saved composition', () => {
+    const saved = defaultDocument();
+    saved.parameters.numPoints = 12;
+    const result = initialDocument({ hash: '#v=1' }, memory(JSON.stringify(saved)), 'light');
+    expect(result.document.parameters.numPoints).not.toBe(12);
+    expect(result.error).toMatch(/version/);
+  });
+  it('valid link beats local, local beats system defaults', () => {
+    const saved = defaultDocument('light');
+    saved.parameters.numPoints = 12;
+    expect(initialDocument({ hash: '' }, memory(JSON.stringify(saved)), 'dark').document).toEqual(
+      saved
     );
-    const { meta } = decodeConfig(encoded);
-
-    expect(meta).toEqual({ view: '2d', spawnMode: 'static', rangeMode: 'experimental' });
+    expect(
+      initialDocument({ hash: '#v=2&numPoints=24' }, memory(JSON.stringify(saved)), 'dark').document
+        .parameters.numPoints
+    ).toBe(24);
   });
-
-  it('preserves values that only exist under the experimental profile', () => {
-    // 200 particles per ring is above the safe ceiling of 128. Encoding and decoding under
-    // the experimental profile must not quietly clamp it back down.
-    const config = { ...DEFAULTS, numPoints: 200 };
-    const encoded = encodeConfig(config, { rangeMode: 'experimental' });
-    const { values, meta } = decodeConfig(encoded);
-
-    expect(meta.rangeMode).toBe('experimental');
-    expect(values.numPoints).toBe(200);
+  it('persists synchronously in the new storage key', () => {
+    let written;
+    const doc = defaultDocument();
+    expect(
+      storeDocument(doc, {
+        setItem: (key, value) => {
+          written = [key, value];
+        },
+      })
+    ).toBe(true);
+    expect(written[0]).toBe(DOCUMENT_KEY);
+    expect(JSON.parse(written[1])).toEqual(doc);
   });
-
-  it('preserves automatic versus explicitly chosen colours', () => {
-    for (const color of ['auto', '#ffffff', '#000000', '#31a9cc']) {
-      expect(decodeConfig(encodeConfig({ ...DEFAULTS, color })).values.color).toBe(color);
+  it('handles blocked storage without claiming success', () => {
+    expect(
+      storeDocument(defaultDocument(), {
+        setItem() {
+          throw new Error('blocked');
+        },
+      })
+    ).toBe(false);
+    expect(
+      initialDocument(
+        { hash: '' },
+        {
+          getItem() {
+            throw new Error('blocked');
+          },
+        },
+        'light'
+      ).document.appearance
+    ).toBe('light');
+  });
+  it('keeps preferences and edits usable when access to localStorage itself is blocked', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage is disabled', 'SecurityError');
+      },
+    });
+    try {
+      expect(readPreferences()).toEqual(readPreferences(memory()));
+      expect(storeDocument(defaultDocument())).toBe(false);
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
+      else delete globalThis.localStorage;
     }
   });
-});
-
-describe('decodeConfig is total', () => {
-  it('returns empty results for junk input', () => {
-    for (const input of ['', '#', '???', 'not=a&real=config', null, undefined, 42]) {
-      const { values, meta } = decodeConfig(input);
-      expect(values).toEqual({});
-      expect(meta).toEqual({});
+  it.each(['null', '[]', '{"version":1}', 'broken'])(
+    'invalid saved document %s uses defaults',
+    (saved) => {
+      expect(initialDocument({ hash: '' }, memory(saved), 'dark').document).toEqual(
+        defaultDocument()
+      );
     }
+  );
+  it('does not retain legacy properties in a validated document', () => {
+    const doc = defaultDocument();
+    doc.parameters.initialRadius = 800;
+    doc.time = 500;
+    const clean = validateDocument(doc);
+    expect(clean).not.toHaveProperty('time');
+    expect(clean.parameters).not.toHaveProperty('initialRadius');
   });
-
-  it('tolerates a leading # or ?', () => {
-    expect(decodeConfig('#numPoints=40').values.numPoints).toBe(40);
-    expect(decodeConfig('?numPoints=40').values.numPoints).toBe(40);
-  });
-
-  it('clamps out-of-range numbers instead of trusting them', () => {
-    const { values } = decodeConfig('numPoints=999999&speed=-50');
-    const points = CONTROLS.find((spec) => spec.key === 'numPoints');
-    const speed = CONTROLS.find((spec) => spec.key === 'speed');
-
-    expect(values.numPoints).toBe(rangeBounds(points, 'safe').max);
-    expect(values.speed).toBe(rangeBounds(speed, 'safe').min);
-  });
-
-  it('snaps numbers onto the control step grid', () => {
-    // `size` steps by 0.5, so 4.37 is not a representable value.
-    const { values } = decodeConfig('size=4.37');
-    expect(values.size).toBe(4.5);
-  });
-
-  it('drops non-numeric values for range controls', () => {
-    const { values } = decodeConfig('numPoints=banana&speed=NaN');
-    expect(values).not.toHaveProperty('numPoints');
-    expect(values).not.toHaveProperty('speed');
-  });
-
-  it('drops unknown keys', () => {
-    const { values } = decodeConfig('numPoints=40&somethingElse=7&__proto__=x');
-    expect(values).toEqual({ numPoints: 40 });
-  });
-
-  it('rejects a select option that does not exist', () => {
-    expect(decodeConfig('shape=disc').values.shape).toBe('disc');
-    expect(decodeConfig('shape=dodecahedron').values).not.toHaveProperty('shape');
-  });
-
-  it('rejects a malformed colour', () => {
-    expect(decodeConfig('color=%23ABCDEF').values.color).toBe('#abcdef');
-    expect(decodeConfig('color=red').values).not.toHaveProperty('color');
-    expect(decodeConfig('color=%23fff').values).not.toHaveProperty('color');
-  });
-
-  it('rejects out-of-vocabulary meta values', () => {
-    const { meta } = decodeConfig('view=4d&spawn=chaotic&range=wild');
-    expect(meta).toEqual({});
-  });
-
-  it('reads checkboxes as booleans', () => {
-    expect(decodeConfig('glow=1').values.glow).toBe(true);
-    expect(decodeConfig('glow=0').values.glow).toBe(false);
-    expect(decodeConfig('glow=nonsense').values.glow).toBe(false);
-  });
-
-  it('only produces values the scene already understands', () => {
-    const { values } = decodeConfig(encodeConfig({ ...DEFAULTS }));
-    for (const key of Object.keys(values)) expect(DEFAULTS).toHaveProperty(key);
-  });
-});
-
-describe('initialConfig', () => {
-  it('prefers the URL hash over storage', () => {
-    vi.stubGlobal('localStorage', {
-      getItem: () => encodeConfig({ ...DEFAULTS, numPoints: 80 }, { view: '3d' }),
-    });
-    const result = initialConfig({ hash: '#numPoints=40' });
-    expect(result.values.numPoints).toBe(40);
-    expect(result.meta).toEqual({});
-  });
-
-  it('falls back when the hash carries nothing usable', () => {
-    // No `localStorage` in the node test environment, so this also covers the
-    // storage-unavailable path staying non-fatal.
-    const result = initialConfig({ hash: '#nothing=here' });
-    expect(result.values).toEqual({});
-  });
-
-  it('restores view, profile and automatic colour from the same stored configuration', () => {
-    const storage = new Map();
-    vi.stubGlobal('localStorage', {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    });
-    const meta = { view: '2d', spawnMode: 'static', rangeMode: 'experimental' };
-    storeConfig({ ...DEFAULTS, color: 'auto' }, meta);
-    expect([...storage.keys()]).toEqual([CONFIG_STORAGE_KEY]);
-    const restored = initialConfig({ hash: '' });
-    expect(restored.meta).toEqual(meta);
-    expect(restored.values.color).toBe('auto');
-  });
-
-  it('ignores query-string and separate stored view overrides', () => {
-    vi.stubGlobal('localStorage', {
-      getItem: (key) =>
-        key === CONFIG_STORAGE_KEY ? encodeConfig({ ...DEFAULTS }, { view: '3d' }) : '2d',
-    });
-    expect(initialConfig({ hash: '', search: '?view=2d' }).meta.view).toBe('3d');
-  });
-
-  it('does not throw on a location without a hash', () => {
-    expect(() => initialConfig({})).not.toThrow();
+  it('validates editor preferences independently', () => {
+    expect(readPreferences(memory('null')).capture.fps).toBe(30);
+    expect(
+      readPreferences(memory('{"shortcuts":false,"capture":{"fps":999,"duration":999}}')).capture
+    ).toEqual({ resolution: 'screen', fps: 30, duration: 120 });
   });
 });

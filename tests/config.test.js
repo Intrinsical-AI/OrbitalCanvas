@@ -3,13 +3,11 @@ import {
   clamp,
   CONTROLS,
   DEFAULTS,
-  EXPORT_LIMITS,
   formatValue,
   PRESETS,
   presetValues,
-  randomValue,
+  varyValues,
   RANGE_MODES,
-  REBUILD_KEYS,
   rangeBounds,
   SECTIONS,
   snapToStep,
@@ -35,12 +33,6 @@ describe('control specification', () => {
   it('targets only real config keys', () => {
     for (const spec of CONTROLS) {
       expect(DEFAULTS).toHaveProperty(spec.key);
-    }
-  });
-
-  it('lists only real config keys as rebuild triggers', () => {
-    for (const key of REBUILD_KEYS) {
-      expect(DEFAULTS).toHaveProperty(key);
     }
   });
 
@@ -130,13 +122,9 @@ describe('presets', () => {
     expect(fromDefaults.lineWidth).toBe(DEFAULTS.lineWidth);
   });
 
-  it('cover every control except the auto-orbit motion preference', () => {
+  it('cover every scene control while leaving the camera outside presets', () => {
     const keys = Object.keys(presetValues(PRESETS[0]));
-    expect(keys.sort()).toEqual(
-      CONTROLS.map((spec) => spec.key)
-        .filter((key) => key !== 'autoOrbit')
-        .sort()
-    );
+    expect(keys.sort()).toEqual(CONTROLS.map((spec) => spec.key).sort());
     expect(presetValues(PRESETS.find((p) => p.id === 'default'))).not.toHaveProperty('autoOrbit');
   });
 
@@ -177,13 +165,6 @@ describe('unit conversion', () => {
     expect(rangeBounds(points, 'safe').max).toBe(128);
     expect(rangeBounds(points, 'experimental').max).toBe(240);
     expect(DEFAULTS.numPoints).toBeLessThanOrEqual(rangeBounds(points, 'safe').max);
-  });
-
-  it('keeps export limits bounded by the active profile', () => {
-    expect(EXPORT_LIMITS.safe.duration.max).toBe(30);
-    expect(EXPORT_LIMITS.safe.fps.max).toBe(60);
-    expect(EXPORT_LIMITS.experimental.duration.max).toBe(120);
-    expect(EXPORT_LIMITS.experimental.fps.max).toBe(120);
   });
 
   it('stores speed with no hidden scale factor', () => {
@@ -282,45 +263,28 @@ describe('formatValue', () => {
   });
 });
 
-describe('randomValue', () => {
-  it('respects each control range and step grid', () => {
-    const rng = makeRng([0, 0.1, 0.37, 0.5, 0.63, 0.99, 1 - Number.EPSILON]);
-    for (const spec of CONTROLS.filter((c) => c.type === 'range')) {
-      for (let i = 0; i < 7; i++) {
-        const value = randomValue(spec, rng);
-        expect(value).toBeGreaterThanOrEqual(spec.min);
-        expect(value).toBeLessThanOrEqual(spec.max);
-        expect(snapToStep(spec, value)).toBe(value);
-      }
+describe('bounded variations', () => {
+  it.each(['safe', 'experimental'])(
+    'keeps numeric values inside %s and leaves other controls alone',
+    (mode) => {
+      for (const strength of [0.05, 0.15, 0.3])
+        for (const r of [0, 0.37, 0.5, 0.99]) {
+          const varied = { ...DEFAULTS, ...varyValues(DEFAULTS, mode, strength, () => r) };
+          expect(varied.color).toBe('auto');
+          expect(varied.shape).toBe(DEFAULTS.shape);
+          for (const spec of CONTROLS.filter((s) => s.type === 'range')) {
+            const display = toDisplay(spec, varied[spec.key], mode),
+              bounds = rangeBounds(spec, mode);
+            expect(display).toBeGreaterThanOrEqual(bounds.min);
+            expect(display).toBeLessThanOrEqual(bounds.max);
+          }
+        }
     }
-  });
-
-  it('produces a six-digit hex colour, zero-padded', () => {
-    const spec = CONTROLS.find((c) => c.type === 'color');
-    expect(randomValue(spec, () => 0)).toBe('#000000');
-    expect(randomValue(spec, () => 0.5)).toMatch(/^#[0-9a-f]{6}$/);
-  });
-
-  it('only picks values that exist for select controls', () => {
-    const spec = CONTROLS.find((c) => c.type === 'select');
-    const allowed = spec.options.map((o) => o.value);
-    for (const r of [0, 0.49, 0.99]) {
-      expect(allowed).toContain(randomValue(spec, () => r));
-    }
-  });
-
-  it('uses the experimental range when explicitly requested', () => {
-    const spec = CONTROLS.find((c) => c.key === 'numPoints');
-    expect(randomValue(spec, () => 1 - Number.EPSILON, 'safe')).toBe(128);
-    expect(randomValue(spec, () => 1 - Number.EPSILON, 'experimental')).toBe(240);
+  );
+  it('does not vary hidden lifecycle controls', () => {
+    const changes = varyValues({ ...DEFAULTS, spawnMode: 'static' }, 'safe', 0.3, () => 1);
+    expect(changes).not.toHaveProperty('ringSpacing');
+    expect(changes).not.toHaveProperty('maxRings');
+    expect(changes).toHaveProperty('ringCount');
   });
 });
-
-/**
- * @param {number[]} values
- * @returns {() => number} Deterministic cycling generator.
- */
-function makeRng(values) {
-  let i = 0;
-  return () => values[i++ % values.length];
-}

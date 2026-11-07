@@ -1,3 +1,5 @@
+import { FILE_LIMIT, PAYLOAD_LIMIT } from './capture.js';
+
 /**
  * Video export.
  *
@@ -27,9 +29,9 @@ export class Recorder {
   }
 
   /** Request that an in-flight export stops at the next frame boundary. */
-  cancel() {
+  cancel(reason = cancelled()) {
     this.aborted = true;
-    this.cancelCapture?.();
+    this.cancelCapture?.(reason);
   }
 
   /**
@@ -110,6 +112,7 @@ export class Recorder {
    * @param {{fps: number, duration: number, renderFrame: (dt: number) => void}} options
    */
   async #recordWithMediaRecorder({ fps, duration, renderFrame }) {
+    this.fallback = true;
     if (typeof MediaRecorder === 'undefined' || !this.canvas.captureStream) {
       throw new Error('This browser supports neither WebCodecs nor MediaRecorder capture.');
     }
@@ -123,11 +126,19 @@ export class Recorder {
       );
       recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       const chunks = [];
+      let payloadBytes = 0;
+      let rejectCapture;
       recorder.addEventListener('dataavailable', (event) => {
-        if (event.data.size > 0) chunks.push(event.data);
+        payloadBytes += event.data.size;
+        if (payloadBytes > PAYLOAD_LIMIT) {
+          rejectCapture?.(
+            new Error('Capture exceeded the 60 MiB limit. Reduce duration, FPS or resolution.')
+          );
+        } else if (event.data.size > 0) chunks.push(event.data);
       });
 
       await new Promise((resolve, reject) => {
+        rejectCapture = reject;
         recorder.addEventListener('stop', resolve, { once: true });
         recorder.addEventListener(
           'error',
@@ -137,7 +148,7 @@ export class Recorder {
           }
         );
         // Cancellation must also work in a background tab where rAF is suspended.
-        this.cancelCapture = () => reject(cancelled());
+        this.cancelCapture = (reason = cancelled()) => reject(reason);
         const startedAt = performance.now();
         let previousElapsed = 0;
         const tick = (now) => {
@@ -154,7 +165,7 @@ export class Recorder {
             reject(error);
           }
         };
-        recorder.start();
+        recorder.start(250);
         this.#report(true, 0, 'MediaRecorder · real time');
         rafId = requestAnimationFrame(tick);
       });
@@ -167,6 +178,7 @@ export class Recorder {
       if (!extension) throw new Error(`Unsupported capture format: ${actualType || 'unknown'}.`);
       const blob = new Blob(chunks, { type: actualType });
       if (!blob.size) throw new Error('Capture produced no video data.');
+      if (blob.size > FILE_LIMIT) throw new Error('Capture exceeded the 64 MiB file limit.');
       const filename = `orbital-canvas-${timestamp()}.${extension}`;
       download(blob, filename);
       return { filename, strategy: 'mediarecorder' };

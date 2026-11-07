@@ -36,6 +36,8 @@ function fakeContext() {
     restore() {},
     beginPath() {},
     setTransform() {},
+    translate() {},
+    scale() {},
     clearRect() {
       calls.clearRect += 1;
     },
@@ -86,7 +88,7 @@ function fakeContext() {
   };
 }
 
-const viewport = { width: 800, height: 600 };
+const viewport = { width: 960, height: 720 };
 
 /** Chord segments are the last `lineTo.length` moveTo calls; particle traces come first. */
 const chordStarts = (ctx) => ctx.calls.moveTo.slice(-ctx.calls.lineTo.length || Infinity);
@@ -144,7 +146,7 @@ describe('Renderer', () => {
     for (const view of ['2d', '3d', '3d']) {
       if (view === '3d') camera.orbitBy(100, 50);
       const projector = createProjector(view, camera);
-      projector.configure(viewport, scene.config.initialRadius);
+      projector.configure(viewport, 1);
       const expected = [];
       scene.forEachParticle((position) => {
         const { sx, sy } = projector.project(position, {});
@@ -207,13 +209,13 @@ describe('Renderer', () => {
     expect(ctx.calls.fillRectArgs).toEqual([[0, 0, 800, 600]]);
   });
 
-  it('nudges stalled trail pixels with one additive background fill every 30 frames', () => {
+  it('nudges stalled trail pixels with one additive background fill every half second', () => {
     const scene = new Scene({ spawnMode: 'static', ringCount: 1, numPoints: 3 });
     const projector = createProjector('2d', new Camera());
     const ctx = fakeContext();
     const renderer = new Renderer(ctx, viewport);
     for (let frame = 0; frame < 60; frame++) {
-      renderer.render(scene, projector, { ...THEME, trailAlpha: 0.02 });
+      renderer.render(scene, projector, THEME, 1 / 60);
     }
     const additive = ctx.calls.fillRectComposite
       .map((mode, k) => [mode, ctx.calls.fillRectAlpha[k]])
@@ -222,7 +224,9 @@ describe('Renderer', () => {
       ['lighter', 10 / 255],
       ['lighter', 10 / 255],
     ]);
-    expect(ctx.calls.fillRectAlpha.filter((a) => a === 0.02)).toHaveLength(60);
+    expect(ctx.calls.fillRectAlpha.filter((a) => a > 0 && a < 1 && a !== 10 / 255)).toHaveLength(
+      60
+    );
   });
 
   it('keeps chord endpoints stable when a ring spawns within one change window', () => {

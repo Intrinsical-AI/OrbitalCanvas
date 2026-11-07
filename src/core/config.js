@@ -21,24 +21,12 @@ const radToDeg = (r) => r / DEG;
 /** Parameter-range profiles exposed by the control drawer. */
 /** @typedef {'safe'|'experimental'} RangeMode */
 export const RANGE_MODES = Object.freeze(['safe', 'experimental']);
-
-/**
- * Export limits share the same profile switch as the scene controls. The experimental
- * ceiling stops at 120 s / 120 fps: unlike a scene parameter, a longer export only
- * multiplies work and does not create a richer interactive state.
- */
-export const EXPORT_LIMITS = Object.freeze({
-  safe: Object.freeze({
-    duration: Object.freeze({ min: 1, max: 30, step: 1 }),
-    fps: Object.freeze({ min: 10, max: 60, step: 1 }),
-  }),
-  experimental: Object.freeze({
-    duration: Object.freeze({ min: 1, max: 120, step: 1 }),
-    fps: Object.freeze({ min: 10, max: 120, step: 1 }),
-  }),
+export const CAMERA_DEFAULTS = Object.freeze({
+  yaw: -Math.PI / 6,
+  pitch: (25 * Math.PI) / 180,
+  zoom: 1,
+  autoOrbit: true,
 });
-
-export const EXPORT_DEFAULTS = Object.freeze({ duration: 6, fps: 60 });
 
 /**
  * Default configuration, in **internal units**.
@@ -54,18 +42,8 @@ export const DEFAULTS = Object.freeze({
   speed: 0.5,
   /** Tilt added to each successive ring, radians. */
   planeAngle: degToRad(15),
-  /** Radius of the first (outermost) ring, world units. */
-  initialRadius: 380,
-  /**
-   * Radius decrement between successive rings, world units.
-   *
-   * With a 12-ring budget, 28 spreads the rings across the full radius range. A small step
-   * keeps every ring near the outermost one, so the set reads as a single thick circle and
-   * the accumulated tilt is invisible.
-   */
-  radiusStep: 28,
-  /** Rings smaller than this are not spawned. */
-  minRadius: 40,
+  innerRatio: 0.1,
+  ringSpacing: 0.08,
 
   // --- Generative spawn mode -------------------------------------------
   /**
@@ -117,14 +95,8 @@ export const DEFAULTS = Object.freeze({
   glow: false,
   /** Milliseconds between chord-pattern changes. */
   edgeFrequency: 3500,
-  /** Opacity of the per-frame background fill; lower means longer motion trails. */
-  trailAlpha: 0.1,
-
-  // --- View -------------------------------------------------------------
-  /** `'3d'` = perspective orbit camera; `'2d'` = strictly flat top-down projection. */
-  view: '3d',
-  /** Slowly rotate the 3D camera on its own. */
-  autoOrbit: true,
+  /** Trail luminance half-life in seconds; zero clears every frame. */
+  trailHalfLife: 0.12,
 });
 
 /**
@@ -148,7 +120,7 @@ export const SECTIONS = Object.freeze([
 /**
  * Declarative UI control specification.
  *
- * Drives input creation, badge formatting, reset and randomise. Every entry maps one
+ * Drives input creation, value formatting, reset and numeric variations. Every entry maps one
  * generated input id to one `DEFAULTS` key; `tests/spec-checks.js` validates the table.
  *
  * @typedef {object} ControlSpec
@@ -160,6 +132,7 @@ export const SECTIONS = Object.freeze([
  * @property {number} [min] Range minimum, display units.
  * @property {number} [max] Range maximum, display units.
  * @property {number} [experimentalMax] Wider explicit-exploration maximum, display units.
+ * @property {number} [experimentalMin] Wider explicit-exploration minimum, display units.
  * @property {number} [step] Range step, display units.
  * @property {string} [unit] Suffix appended to the badge.
  * @property {number} [precision] Badge decimal places.
@@ -167,7 +140,6 @@ export const SECTIONS = Object.freeze([
  * @property {(display: number) => number} [toInternal]
  * @property {(internal: number) => number} [toDisplay]
  * @property {'generative'|'static'} [spawnMode] Only shown for this spawn mode.
- * @property {boolean} [randomise] Included in the randomise action. Defaults to true.
  */
 
 /** @type {ReadonlyArray<ControlSpec>} */
@@ -249,30 +221,35 @@ export const CONTROLS = Object.freeze([
     toDisplay: radToDeg,
   },
   {
-    id: 'initialRadiusControl',
-    key: 'initialRadius',
+    id: 'innerRatioControl',
+    key: 'innerRatio',
     type: 'range',
-    label: 'Outer radius',
+    label: 'Inner hole',
     section: 'form',
-    min: 100,
-    max: 550,
-    experimentalMax: 800,
-    step: 10,
-    precision: 0,
-  },
-  {
-    id: 'radiusStepControl',
-    key: 'radiusStep',
-    type: 'range',
-    label: 'Radius step',
-    section: 'form',
-    min: 5,
-    max: 50,
-    experimentalMax: 80,
+    min: 0,
+    max: 80,
+    experimentalMax: 95,
     step: 1,
     precision: 0,
-    // Static mode spreads `ringCount` rings evenly over [minRadius, initialRadius]
-    // instead of stepping, so this control only applies to generative spawning.
+    unit: '%',
+    toInternal: (v) => v / 100,
+    toDisplay: (v) => v * 100,
+  },
+  {
+    id: 'ringSpacingControl',
+    key: 'ringSpacing',
+    type: 'range',
+    label: 'Ring spacing',
+    section: 'form',
+    min: 1,
+    experimentalMin: 0.5,
+    max: 25,
+    experimentalMax: 50,
+    step: 0.5,
+    precision: 1,
+    unit: '%',
+    toInternal: (v) => v / 100,
+    toDisplay: (v) => v * 100,
     spawnMode: 'generative',
   },
   {
@@ -331,16 +308,17 @@ export const CONTROLS = Object.freeze([
     precision: 0,
   },
   {
-    id: 'trailAlphaControl',
-    key: 'trailAlpha',
+    id: 'trailHalfLifeControl',
+    key: 'trailHalfLife',
     type: 'range',
-    label: 'Trail persistence',
+    label: 'Trail length',
     section: 'motion',
-    min: 0.02,
-    max: 0.7,
-    experimentalMax: 1,
+    min: 0,
+    max: 1,
+    experimentalMax: 3,
     step: 0.01,
     precision: 2,
+    unit: ' s',
   },
   {
     id: 'colorControl',
@@ -366,7 +344,6 @@ export const CONTROLS = Object.freeze([
     type: 'checkbox',
     label: 'Chromatic chords',
     section: 'style',
-    randomise: false,
   },
   {
     id: 'glowControl',
@@ -374,26 +351,13 @@ export const CONTROLS = Object.freeze([
     type: 'checkbox',
     label: 'Glow',
     section: 'style',
-    randomise: false,
-  },
-  {
-    id: 'autoOrbitControl',
-    key: 'autoOrbit',
-    type: 'checkbox',
-    label: 'Auto-orbit camera',
-    section: 'motion',
-    randomise: false,
   },
 ]);
-
-/** @type {ReadonlyMap<string, ControlSpec>} */
-export const CONTROL_BY_KEY = new Map(CONTROLS.map((spec) => [spec.key, spec]));
 
 /**
  * Named starting points, in **internal units** so they read exactly like `DEFAULTS`.
  *
- * These exist because `randomize()` walks the whole parameter space uniformly, which mostly
- * lands on noise. A preset is a hand-picked region worth arriving at directly; see
+ * A preset is a hand-picked region worth arriving at directly; see
  * `presetValues` for how one is applied.
  *
  * @typedef {object} Preset
@@ -417,14 +381,13 @@ export const PRESETS = Object.freeze([
     values: Object.freeze({
       numPoints: 24,
       planeAngle: degToRad(72),
-      initialRadius: 420,
-      radiusStep: 46,
+      ringSpacing: 0.11,
       maxRings: 8,
       ringCount: 8,
       speed: 0.2,
       size: 4.5,
       chordAlpha: 0.05,
-      trailAlpha: 0.35,
+      trailHalfLife: 0.03,
       edgeFrequency: 5200,
     }),
   }),
@@ -436,15 +399,14 @@ export const PRESETS = Object.freeze([
     values: Object.freeze({
       numPoints: 118,
       planeAngle: degToRad(8),
-      initialRadius: 460,
-      radiusStep: 14,
+      ringSpacing: 0.03,
       maxRings: 18,
       ringCount: 18,
       speed: 0.35,
       size: 1,
       lineWidth: 0.5,
       chordAlpha: 0.05,
-      trailAlpha: 0.06,
+      trailHalfLife: 0.19,
       edgeFrequency: 900,
     }),
   }),
@@ -456,14 +418,13 @@ export const PRESETS = Object.freeze([
     values: Object.freeze({
       numPoints: 60,
       planeAngle: degToRad(30),
-      initialRadius: 330,
-      radiusStep: 22,
+      ringSpacing: 0.065,
       maxRings: 14,
       ringCount: 14,
       speed: 1.7,
       size: 2,
       chordAlpha: 0,
-      trailAlpha: 0.03,
+      trailHalfLife: 0.38,
       edgeFrequency: 2400,
     }),
   }),
@@ -472,8 +433,7 @@ export const PRESETS = Object.freeze([
 /**
  * The complete control state a preset produces: every control at its default, then the
  * preset's own values. Applying a preset therefore gives the same result whatever was set
- * before. `autoOrbit` is left out: it is a motion preference, not part of a look, and it is
- * switched off for reduced-motion users.
+ * before. Camera pose and motion live outside the scene parameters.
  *
  * @param {Preset} preset
  * @returns {Record<string, unknown>} Internal units.
@@ -481,22 +441,10 @@ export const PRESETS = Object.freeze([
 export function presetValues(preset) {
   const values = {};
   for (const spec of CONTROLS) {
-    if (spec.key !== 'autoOrbit') values[spec.key] = DEFAULTS[spec.key];
+    values[spec.key] = DEFAULTS[spec.key];
   }
   return Object.assign(values, preset.values);
 }
-
-/** Config keys whose change requires the ring set to be rebuilt from scratch. */
-export const REBUILD_KEYS = Object.freeze([
-  'spawnMode',
-  'numPoints',
-  'planeAngle',
-  'initialRadius',
-  'radiusStep',
-  'minRadius',
-  'maxRings',
-  'ringCount',
-]);
 
 /**
  * @param {number} value
@@ -518,14 +466,14 @@ export function rangeBounds(spec, mode = 'safe') {
     throw new Error(`Control "${spec.id}" is not a range.`);
   }
   return {
-    min: spec.min,
+    min: mode === 'experimental' ? (spec.experimentalMin ?? spec.min) : spec.min,
     max: mode === 'experimental' ? (spec.experimentalMax ?? spec.max) : spec.max,
     step: spec.step,
   };
 }
 
 /**
- * Snap a value to the control's step grid, anchored at `min`, then clamp to range.
+ * Snap a value to the control's step grid, anchored at zero, then clamp to range.
  * Guards against floating-point dust (e.g. 0.30000000000000004) by rounding to the
  * step's own decimal precision.
  *
@@ -537,8 +485,7 @@ export function rangeBounds(spec, mode = 'safe') {
 export function snapToStep(spec, value, mode = 'safe') {
   if (spec.type !== 'range') return value;
   const { min, max, step } = rangeBounds(spec, mode);
-  const steps = Math.round((clamp(value, min, max) - min) / step);
-  const snapped = min + steps * step;
+  const snapped = Math.round(clamp(value, min, max) / step) * step;
   const decimals = decimalsOf(step);
   return clamp(Number(snapped.toFixed(decimals)), min, max);
 }
@@ -600,25 +547,15 @@ export function formatValue(spec, internalValue, mode = 'safe') {
   return `${display.toFixed(spec.precision ?? 1)}${spec.unit ?? ''}`;
 }
 
-/**
- * Pick a random value for a control, respecting its step grid.
- * @param {ControlSpec} spec
- * @param {() => number} [rng] Injectable for deterministic tests.
- * @param {RangeMode} [mode='safe']
- * @returns {number|string|boolean}
- */
-export function randomValue(spec, rng = Math.random, mode = 'safe') {
-  if (spec.type === 'color') {
-    const hex = Math.floor(rng() * 0xffffff)
-      .toString(16)
-      .padStart(6, '0');
-    return `#${hex}`;
-  }
-  if (spec.type === 'select') {
-    const options = spec.options ?? [];
-    return options[Math.floor(rng() * options.length)].value;
-  }
-  if (spec.type === 'checkbox') return rng() < 0.5;
-  const { min, max } = rangeBounds(spec, mode);
-  return snapToStep(spec, min + rng() * (max - min), mode);
+/** Bounded numeric variations leave colour, shape and camera alone. */
+export function varyValues(config, mode, strength, rng = Math.random) {
+  return Object.fromEntries(
+    CONTROLS.filter(
+      (s) => s.type === 'range' && (!s.spawnMode || s.spawnMode === config.spawnMode)
+    ).map((spec) => {
+      const { min, max } = rangeBounds(spec, mode);
+      const display = toDisplay(spec, config[spec.key], mode);
+      return [spec.key, toInternal(spec, display + (2 * rng() - 1) * (max - min) * strength, mode)];
+    })
+  );
 }

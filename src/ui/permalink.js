@@ -1,154 +1,195 @@
-import { CONTROLS, RANGE_MODES, toDisplay, toInternal } from '../core/config.js';
+import {
+  CAMERA_DEFAULTS,
+  CONTROLS,
+  DEFAULTS,
+  clamp,
+  toDisplay,
+  toInternal,
+} from '../core/config.js';
 
-/**
- * Configuration serialisation, for permalinks and for session persistence.
- *
- * Two properties matter here and both fall out of reusing `CONTROLS` as the schema:
- *
- *  1. **No new wire format.** Values are written in *display* units through `toDisplay`, which
- *     is what a slider shows, so a hash is readable and hand-editable.
- *  2. **Hostile input cannot produce an invalid scene.** Every value comes back through
- *     `toInternal`, which already snaps to the control's step grid and clamps to its range
- *     (`core/config.js`). A stale, truncated or hand-mangled hash therefore degrades to a
- *     valid scene rather than a broken one, and unknown keys are dropped outright.
- *
- * The format is `URLSearchParams`, so it is order-independent and forward-compatible: adding
- * or renaming a control does not invalidate previously shared links, it just drops the key.
- */
+export const DOCUMENT_KEY = 'orbital-canvas:document:v2';
+export const PREFERENCES_KEY = 'orbital-canvas:preferences:v2';
+export const CAPTURE_DEFAULTS = Object.freeze({ resolution: 'screen', duration: 6, fps: 30 });
 
-export const CONFIG_STORAGE_KEY = 'orbital-canvas:config';
+export function defaultDocument(appearance = 'dark') {
+  return {
+    version: 2,
+    parameters: { ...DEFAULTS },
+    view: '3d',
+    rangeMode: 'safe',
+    camera: { ...CAMERA_DEFAULTS },
+    appearance,
+  };
+}
 
-/** Non-control keys carried alongside the control values. */
-const VIEW_VALUES = ['2d', '3d'];
-const SPAWN_VALUES = ['generative', 'static'];
+function choice(value, allowed) {
+  if (!allowed.includes(value)) throw new Error('Invalid document option.');
+  return value;
+}
 
-/**
- * @typedef {object} Meta
- * @property {'2d'|'3d'} [view]
- * @property {'generative'|'static'} [spawnMode]
- * @property {import('../core/config.js').RangeMode} [rangeMode]
- */
-
-/**
- * Serialise a configuration to a `URLSearchParams` string.
- *
- * @param {Readonly<Record<string, unknown>>} config Internal units.
- * @param {Meta} [meta]
- * @returns {string}
- */
-export function encodeConfig(config, meta = {}) {
-  const mode = RANGE_MODES.includes(meta.rangeMode) ? meta.rangeMode : 'safe';
-  const params = new URLSearchParams();
-
-  // Written first so a human reading the hash sees the profile before the values it governs.
-  params.set('range', mode);
-  if (VIEW_VALUES.includes(meta.view)) params.set('view', meta.view);
-  if (SPAWN_VALUES.includes(meta.spawnMode)) params.set('spawn', meta.spawnMode);
-
+export function validateDocument(input) {
+  if (!input || input.version !== 2) throw new Error('Unsupported document version.');
+  const doc = defaultDocument();
+  doc.view = choice(input.view ?? doc.view, ['2d', '3d']);
+  doc.rangeMode = choice(input.rangeMode ?? doc.rangeMode, ['safe', 'experimental']);
+  doc.appearance = choice(input.appearance ?? doc.appearance, ['dark', 'light']);
+  doc.parameters.spawnMode = choice(input.parameters?.spawnMode ?? DEFAULTS.spawnMode, [
+    'static',
+    'generative',
+  ]);
   for (const spec of CONTROLS) {
-    if (!(spec.key in config)) continue;
-    const value = config[spec.key];
-    if (spec.type === 'checkbox') params.set(spec.key, value ? '1' : '0');
-    else params.set(spec.key, String(toDisplay(spec, value, mode)));
+    const value = input.parameters?.[spec.key] ?? DEFAULTS[spec.key];
+    if (spec.type === 'range') {
+      if (typeof value !== 'number' || !Number.isFinite(value))
+        throw new Error('Invalid numeric parameter.');
+      doc.parameters[spec.key] = toInternal(
+        spec,
+        spec.toDisplay ? spec.toDisplay(value) : value,
+        doc.rangeMode
+      );
+    } else if (spec.type === 'checkbox') {
+      if (typeof value !== 'boolean') throw new Error('Invalid switch.');
+      doc.parameters[spec.key] = value;
+    } else if (spec.type === 'select') {
+      doc.parameters[spec.key] = choice(
+        value,
+        spec.options.map((o) => o.value)
+      );
+    } else {
+      if (typeof value !== 'string' || (value !== 'auto' && !/^#[0-9a-f]{6}$/i.test(value)))
+        throw new Error('Invalid colour.');
+      doc.parameters[spec.key] = value.toLowerCase();
+    }
   }
+  const camera = { ...CAMERA_DEFAULTS, ...input.camera };
+  for (const key of ['yaw', 'pitch', 'zoom']) {
+    if (typeof camera[key] !== 'number' || !Number.isFinite(camera[key]))
+      throw new Error('Invalid camera.');
+  }
+  if (typeof camera.autoOrbit !== 'boolean') throw new Error('Invalid camera motion.');
+  if (camera.yaw < -Math.PI || camera.yaw >= Math.PI)
+    camera.yaw =
+      ((((camera.yaw + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  camera.pitch = clamp(camera.pitch, (-89 * Math.PI) / 180, (89 * Math.PI) / 180);
+  camera.zoom = clamp(camera.zoom, 0.25, 3);
+  doc.camera = camera;
+  return doc;
+}
 
+export function encodeDocument(input) {
+  const doc = validateDocument(input);
+  const params = new URLSearchParams({
+    v: '2',
+    view: doc.view,
+    range: doc.rangeMode,
+    appearance: doc.appearance,
+    spawn: doc.parameters.spawnMode,
+  });
+  for (const spec of CONTROLS) {
+    const value = doc.parameters[spec.key];
+    params.set(
+      spec.key,
+      spec.type === 'checkbox' ? (value ? '1' : '0') : String(toDisplay(spec, value, doc.rangeMode))
+    );
+  }
+  params.set('yaw', String((doc.camera.yaw * 180) / Math.PI));
+  params.set('pitch', String((doc.camera.pitch * 180) / Math.PI));
+  params.set('zoom', String(doc.camera.zoom));
+  params.set('orbit', doc.camera.autoOrbit ? '1' : '0');
   return params.toString();
 }
 
-/**
- * Parse a serialised configuration. Never throws: anything unparseable yields empty results.
- *
- * @param {string} text A `URLSearchParams` string, with or without a leading `#` or `?`.
- * @returns {{values: Record<string, unknown>, meta: Meta}} `values` in internal units.
- */
-export function decodeConfig(text) {
-  /** @type {Record<string, unknown>} */
-  const values = {};
-  /** @type {Meta} */
-  const meta = {};
-
-  if (typeof text !== 'string' || !text) return { values, meta };
-
-  let params;
-  try {
-    params = new URLSearchParams(text.replace(/^[#?]+/, ''));
-  } catch {
-    return { values, meta };
+export function decodeDocument(text) {
+  const params = new URLSearchParams(text.replace(/^#/, ''));
+  if (params.get('v') !== '2') throw new Error('This link uses an unsupported document version.');
+  const input = { version: 2, parameters: {}, camera: {} };
+  for (const [name, key] of [
+    ['view', 'view'],
+    ['range', 'rangeMode'],
+    ['appearance', 'appearance'],
+  ]) {
+    if (params.has(name)) input[key] = params.get(name);
   }
-
-  const range = params.get('range');
-  if (RANGE_MODES.includes(range)) meta.rangeMode = range;
-  const mode = meta.rangeMode ?? 'safe';
-
-  const view = params.get('view');
-  if (VIEW_VALUES.includes(view)) meta.view = view;
-
-  const spawn = params.get('spawn');
-  if (SPAWN_VALUES.includes(spawn)) meta.spawnMode = spawn;
-
+  if (params.has('spawn')) input.parameters.spawnMode = params.get('spawn');
   for (const spec of CONTROLS) {
     if (!params.has(spec.key)) continue;
-    const raw = params.get(spec.key);
-
-    if (spec.type === 'checkbox') {
-      values[spec.key] = raw === '1';
-      continue;
-    }
-    if (spec.type === 'select') {
-      // An unknown option would put the scene in a state no control can represent.
-      if (spec.options?.some((option) => option.value === raw)) values[spec.key] = raw;
-      continue;
-    }
-    if (spec.type === 'color') {
-      if (raw === 'auto' || /^#[0-9a-f]{6}$/i.test(raw)) values[spec.key] = raw.toLowerCase();
-      continue;
-    }
-    // Range. `toInternal` snaps and clamps, but it cannot rescue a non-number.
-    const numeric = Number(raw);
-    if (Number.isFinite(numeric)) values[spec.key] = toInternal(spec, numeric, mode);
+    const value = params.get(spec.key);
+    if (spec.type === 'range') {
+      if (value.trim() === '' || !Number.isFinite(Number(value)))
+        throw new Error('Invalid numeric parameter.');
+      input.parameters[spec.key] = spec.toInternal ? spec.toInternal(Number(value)) : Number(value);
+    } else if (spec.type === 'checkbox') {
+      choice(value, ['0', '1']);
+      input.parameters[spec.key] = value === '1';
+    } else input.parameters[spec.key] = value;
   }
-
-  return { values, meta };
+  for (const key of ['yaw', 'pitch', 'zoom']) {
+    if (!params.has(key)) continue;
+    const raw = params.get(key);
+    if (!raw.trim() || !Number.isFinite(Number(raw))) throw new Error('Invalid camera.');
+    input.camera[key] = Number(raw) * (key === 'zoom' ? 1 : Math.PI / 180);
+  }
+  if (params.has('orbit')) input.camera.autoOrbit = choice(params.get('orbit'), ['0', '1']) === '1';
+  return validateDocument(input);
 }
 
-/**
- * Read the persisted configuration. Storage can be unavailable (private mode, blocked
- * cookies), so this is best-effort in the same way as `ui/theme.js`.
- *
- * @returns {{values: Record<string, unknown>, meta: Meta}}
- */
-function loadStoredConfig() {
+export function initialDocument(location, storage, appearance) {
+  if (location.hash) {
+    try {
+      return { document: decodeDocument(location.hash), error: '' };
+    } catch (error) {
+      return { document: defaultDocument(appearance), error: error.message };
+    }
+  }
   try {
-    return decodeConfig(localStorage.getItem(CONFIG_STORAGE_KEY) ?? '');
+    const stored = storage.getItem(DOCUMENT_KEY);
+    if (stored) return { document: validateDocument(JSON.parse(stored)), error: '' };
   } catch {
-    return { values: {}, meta: {} };
+    /* An unavailable or invalid stored document uses fresh defaults. */
   }
+  return { document: defaultDocument(appearance), error: '' };
 }
 
-/**
- * @param {Readonly<Record<string, unknown>>} config
- * @param {Meta} [meta]
- */
-export function storeConfig(config, meta) {
+export function storeDocument(document, storage) {
   try {
-    localStorage.setItem(CONFIG_STORAGE_KEY, encodeConfig(config, meta));
+    storage ??= localStorage;
+    storage.setItem(DOCUMENT_KEY, JSON.stringify(validateDocument(document)));
+    return true;
   } catch {
-    // Persisting is best-effort; the session still works.
+    return false;
   }
 }
 
-/**
- * Resolve the configuration to boot with.
- *
- * The URL hash wins, then the stored session, then nothing (leaving `DEFAULTS` in place).
- *
- * @param {Location} location
- * @returns {{values: Record<string, unknown>, meta: Meta}}
- */
-export function initialConfig(location) {
-  const fromHash = decodeConfig(location.hash ?? '');
-  if (Object.keys(fromHash.values).length || Object.keys(fromHash.meta).length) {
-    return fromHash;
+export function readPreferences(storage) {
+  let saved;
+  try {
+    storage ??= localStorage;
+    saved = JSON.parse(storage.getItem(PREFERENCES_KEY) ?? '{}');
+  } catch {
+    saved = {};
   }
-  return loadStoredConfig();
+  if (!saved || typeof saved !== 'object') saved = {};
+  return {
+    shortcuts: saved.shortcuts !== false,
+    diagnostics: saved.diagnostics === true,
+    groups: saved.groups && typeof saved.groups === 'object' ? saved.groups : {},
+    capture: {
+      resolution: ['screen', 'landscape', 'square', 'portrait'].includes(saved.capture?.resolution)
+        ? saved.capture.resolution
+        : 'screen',
+      duration: Number.isInteger(saved.capture?.duration)
+        ? clamp(saved.capture.duration, 1, 120)
+        : 6,
+      fps: [24, 30, 60, 120].includes(saved.capture?.fps) ? saved.capture.fps : 30,
+    },
+  };
+}
+
+export function storePreferences(preferences) {
+  try {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
 }

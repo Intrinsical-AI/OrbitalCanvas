@@ -8,6 +8,7 @@ import {
   WebMOutputFormat,
 } from 'mediabunny';
 import { cancelled } from './recorder.js';
+import { FILE_LIMIT, PAYLOAD_LIMIT } from './capture.js';
 
 /**
  * WebCodecs export, isolated in its own module.
@@ -61,11 +62,32 @@ export function selectCodec(canvas) {
  * @returns {Promise<{blob: Blob, extension: string}>}
  * @throws {DOMException} `AbortError` when cancelled.
  */
-export async function encode({ canvas, codec, fps, duration, renderFrame, onProgress, isAborted }) {
+export async function encode({
+  canvas,
+  codec,
+  fps,
+  duration,
+  renderFrame,
+  onProgress,
+  isAborted,
+  payloadLimit = PAYLOAD_LIMIT,
+}) {
   const container = CONTAINER[codec] ?? CONTAINER.avc;
   const target = new BufferTarget();
   const output = new Output({ format: container.format(), target });
-  const source = new CanvasSource(canvas, { codec, bitrate: QUALITY_HIGH });
+  let payloadBytes = 0;
+  let sizeError = null;
+  const source = new CanvasSource(canvas, {
+    codec,
+    bitrate: QUALITY_HIGH,
+    onEncodedPacket(packet) {
+      payloadBytes += packet.data.byteLength;
+      if (payloadBytes > payloadLimit)
+        sizeError = new Error(
+          'Capture exceeded the 60 MiB limit. Reduce duration, FPS or resolution.'
+        );
+    },
+  });
 
   const totalFrames = Math.max(1, Math.round(duration * fps));
   const dt = 1 / fps;
@@ -75,20 +97,28 @@ export async function encode({ canvas, codec, fps, duration, renderFrame, onProg
     await output.start();
     for (let frame = 0; frame < totalFrames; frame++) {
       if (isAborted()) throw cancelled();
-      renderFrame(dt);
+      renderFrame(frame === 0 ? 0 : dt);
       if (isAborted()) throw cancelled();
       // Awaiting is the backpressure signal: it resolves once the encoder and writer are
       // ready for more, and it yields so the progress indicator can repaint.
       await source.add(frame * dt, dt);
+      if (sizeError) throw sizeError;
       if (isAborted()) throw cancelled();
       onProgress((frame + 1) / totalFrames);
     }
     await output.finalize();
+    if (sizeError) throw sizeError;
   } catch (error) {
-    await output.cancel();
+    try {
+      await output.cancel();
+    } catch (cleanupError) {
+      console.error('Capture cleanup failed', cleanupError);
+    }
     throw error;
   }
 
+  if (target.buffer.byteLength > FILE_LIMIT)
+    throw new Error('Capture exceeded the 64 MiB file limit.');
   return {
     blob: new Blob([target.buffer], { type: output.format.mimeType }),
     extension: container.extension,
