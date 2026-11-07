@@ -190,7 +190,8 @@ shortcuts, live geometry, history, colours, version-2 sharing/persistence, reduc
 seven viewport sizes in both appearances, exact PNG bytes, deterministic detached frames,
 work limits, failed native encoder recovery, resize/DPR independence, MediaRecorder motion,
 cancellation and destruction. WebCodecs-specific probes explicitly skip engines without that
-API; the real MediaRecorder path is exercised separately. Downloaded clips, screenshots and
+API; native MediaRecorder cases require that API, and its absence is covered by an explicit
+error-and-recovery check. Downloaded clips, screenshots and
 JSON receipts remain in the printed temporary directory. Automated viewport/touch emulation
 does not replace acceptance on physical mobile devices.
 

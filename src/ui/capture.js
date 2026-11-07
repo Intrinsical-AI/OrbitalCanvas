@@ -45,7 +45,7 @@ export class CaptureScene {
     this.canvas = owner.createElement('canvas');
     this.canvas.width = size.width;
     this.canvas.height = size.height;
-    this.context = this.canvas.getContext('2d', { alpha: false });
+    this.context = this.canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!this.context) throw new Error('Could not create the capture canvas.');
     this.scene = new Scene(document.parameters);
     this.camera = new Camera(document.camera);

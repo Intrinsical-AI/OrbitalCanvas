@@ -49,13 +49,24 @@ export async function harness() {
         });
         await page.addInitScript(() => {
           window.captureExportClicks = 0;
-          document.addEventListener(
-            'click',
-            (event) => {
-              if (event.target.closest?.('#exportButton')) window.captureExportClicks++;
-            },
-            true
-          );
+          window.capturePointerEvents = [];
+          for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click']) {
+            document.addEventListener(
+              type,
+              (event) => {
+                if (type === 'click' && event.target.closest?.('#exportButton'))
+                  window.captureExportClicks++;
+                if (document.getElementById('captureDialog')?.open) {
+                  window.capturePointerEvents.push({
+                    type,
+                    target: event.target.id || event.target.tagName,
+                  });
+                  if (window.capturePointerEvents.length > 18) window.capturePointerEvents.shift();
+                }
+              },
+              true
+            );
+          }
         });
         if (fallback)
           await page.addInitScript(() =>

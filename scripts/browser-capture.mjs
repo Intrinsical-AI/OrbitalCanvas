@@ -13,6 +13,7 @@ async function closeCapture(h, page, context) {
       return {
         name: 'capture_state',
         clicks: window.captureExportClicks,
+        pointerEvents: window.capturePointerEvents,
         exporting: app?.exporting,
         recording: app?.recorder?.recording,
         fallback: app?.recorder?.fallback,
@@ -22,6 +23,7 @@ async function closeCapture(h, page, context) {
         exportDisabled: field('exportButton').disabled,
         videoEncoder: typeof VideoEncoder,
         mediaRecorder: typeof MediaRecorder,
+        captureStream: typeof HTMLCanvasElement.prototype.captureStream,
         supportedMimeTypes:
           typeof MediaRecorder === 'undefined'
             ? []
@@ -38,6 +40,12 @@ async function closeCapture(h, page, context) {
   } finally {
     await context.close();
   }
+}
+
+async function clickExport(page) {
+  const before = await page.evaluate(() => window.captureExportClicks);
+  await page.locator('#exportButton').click();
+  await expect.poll(() => page.evaluate(() => window.captureExportClicks)).toBe(before + 1);
 }
 
 async function setup(h, options = {}) {
@@ -120,7 +128,7 @@ export function captureCases(get) {
         () => window.smokeApp.pngFrame.toDataURL().split(',')[1]
       );
       const pending = page.waitForEvent('download');
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       const download = await pending,
         file = path.join(get().artifacts, 'exact-frame.png');
       await download.saveAs(file);
@@ -168,7 +176,7 @@ export function captureCases(get) {
         };
         window.restoreEncoder = () => Object.assign(proto, original);
       });
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       await expect(page.locator('#cancelExportButton')).toBeVisible();
       await page.waitForFunction(() => typeof window.releaseFlush === 'function');
       await page.evaluate(() => window.releaseFlush());
@@ -191,7 +199,7 @@ export function captureCases(get) {
         )
       );
       const pending = page.waitForEvent('download');
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       await page.waitForFunction(() => typeof window.releaseFlush === 'function');
       await page.evaluate(() => window.releaseFlush());
       const download = await pending;
@@ -232,7 +240,7 @@ export function captureCases(get) {
         };
       });
       const pending = page.waitForEvent('download');
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       await page.waitForFunction(() => typeof window.releaseFlush === 'function');
       await page.setViewportSize({ width: 700, height: 620 });
       await page.evaluate(() => {
@@ -299,6 +307,10 @@ export function captureCases(get) {
         return {
           zeroPngEqual: zero === repeatedZero,
           timelinePngEqual: first === second,
+          simulationEqual:
+            JSON.stringify(a.scene.state) === JSON.stringify(b.scene.state) &&
+            JSON.stringify(a.camera.pose(a.orbit)) === JSON.stringify(b.camera.pose(b.orbit)),
+          contextAttributes: a.context.getContextAttributes?.(),
           liveRings: b.scene.rings.filter((r) => !r.fading).length,
           expectedLiveRings: doc.parameters.maxRings,
           zeroPixels: await comparePixels(zero, repeatedZero),
@@ -326,15 +338,25 @@ export function captureCases(get) {
       await closeCapture(get(), page, context);
     }
   });
-  test('MediaRecorder captures motion from a detached canvas and cancels on Escape', async () => {
+  test('MediaRecorder captures motion from a detached canvas and cancels on Escape', async (t) => {
     const { page, context, errors } = await setup(get(), { fallback: true, source: false });
     try {
+      if (
+        !(await page.evaluate(
+          () =>
+            typeof MediaRecorder === 'function' &&
+            typeof HTMLCanvasElement.prototype.captureStream === 'function'
+        ))
+      ) {
+        t.skip('MediaRecorder/captureStream is absent; unsupported capture is tested separately.');
+        return;
+      }
       const pending = page.waitForEvent('download');
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       const download = await pending;
       await expect(page.locator('#exportButton')).toBeEnabled();
       await videoReceipt(get(), download, 'mediarecorder', false);
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       await expect(page.locator('#cancelExportButton')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(page.locator('#captureError')).toContainText('cancelled');
@@ -347,12 +369,22 @@ export function captureCases(get) {
       await closeCapture(get(), page, context);
     }
   });
-  test('destroying the editor cancels capture and releases tracks without a download', async () => {
+  test('destroying the editor cancels capture and releases tracks without a download', async (t) => {
     const { page, context } = await setup(get(), { fallback: true });
     try {
+      if (
+        !(await page.evaluate(
+          () =>
+            typeof MediaRecorder === 'function' &&
+            typeof HTMLCanvasElement.prototype.captureStream === 'function'
+        ))
+      ) {
+        t.skip('MediaRecorder/captureStream is absent; unsupported capture is tested separately.');
+        return;
+      }
       let downloads = 0;
       page.on('download', () => downloads++);
-      await page.locator('#exportButton').click();
+      await clickExport(page);
       await expect(page.locator('#cancelExportButton')).toBeVisible();
       await page.evaluate(() => {
         window.smokeApp.destroy();
@@ -364,6 +396,24 @@ export function captureCases(get) {
         await page.evaluate(() => window.captureTracks.every((t) => t.readyState === 'ended'))
       );
       assert.equal(downloads, 0);
+    } finally {
+      await closeCapture(get(), page, context);
+    }
+  });
+  test('missing recording APIs report an error and leave capture controls usable', async () => {
+    const { page, context, errors } = await setup(get(), { fallback: true });
+    try {
+      await page.evaluate(() => {
+        Object.defineProperty(window, 'MediaRecorder', { value: undefined, configurable: true });
+      });
+      await clickExport(page);
+      await expect(page.locator('#captureError')).toContainText(
+        'neither WebCodecs nor MediaRecorder'
+      );
+      await expect(page.locator('#exportButton')).toBeEnabled();
+      await expect(page.locator('#cancelExportButton')).not.toBeVisible();
+      assert.equal(await page.evaluate(() => window.captureTracks.length), 0);
+      assert.deepEqual(errors, []);
     } finally {
       await closeCapture(get(), page, context);
     }

@@ -485,6 +485,7 @@ export class App {
     this.captureWasRunning = this.running;
     this.stop();
     this.pngFrame = this.snapshot();
+    this.previewScene = null;
     this.captureDocument = clone(this.document);
     this.captureDocument.camera = this.camera.pose(this.document.camera.autoOrbit);
     this.el.resolutionInput.value = this.preferences.capture.resolution;
@@ -503,38 +504,50 @@ export class App {
     };
   }
   prepareCapture() {
+    const text = (element, value) => {
+      if (element.textContent !== value) element.textContent = value;
+    };
     const video = this.el.captureType.value === 'video';
-    this.el.videoSettings.hidden = !video;
-    this.el.exportButton.textContent = video ? 'Export video' : 'Save PNG';
-    this.el.captureError.textContent = '';
+    if (this.el.videoSettings.hidden !== !video) this.el.videoSettings.hidden = !video;
+    text(this.el.exportButton, video ? 'Export video' : 'Save PNG');
+    text(this.el.captureError, '');
     this.captureSpec = null;
     let source = this.pngFrame;
     if (video) {
       const options = this.captureOptions();
       const size = captureSize(options.resolution, this.pngFrame);
       const limit = captureLimit(size, options.fps);
-      this.el.durationInput.max = String(limit);
+      if (this.el.durationInput.max !== String(limit)) this.el.durationInput.max = String(limit);
       try {
         this.captureSpec = validateCapture(options, this.pngFrame);
       } catch (error) {
-        this.el.captureError.textContent = error.message;
+        text(this.el.captureError, error.message);
       }
-      this.previewScene = new CaptureScene(this.captureDocument, size, this.doc);
+      if (
+        !this.previewScene ||
+        this.previewScene.canvas.width !== size.width ||
+        this.previewScene.canvas.height !== size.height
+      )
+        this.previewScene = new CaptureScene(this.captureDocument, size, this.doc);
       source = this.previewScene.canvas;
-      this.el.captureSummary.textContent =
-        size.width + ' × ' + size.height + ' · up to ' + limit + ' s at ' + options.fps + ' FPS';
-      this.el.capturePreviewNote.textContent =
-        'Reproducible restart · complete ring set · frame zero';
+      text(
+        this.el.captureSummary,
+        size.width + ' × ' + size.height + ' · up to ' + limit + ' s at ' + options.fps + ' FPS'
+      );
+      text(this.el.capturePreviewNote, 'Reproducible restart · complete ring set · frame zero');
       if (this.captureSpec) {
         this.preferences.capture = options;
         storePreferences(this.preferences);
       }
     } else {
-      this.el.captureSummary.textContent = source.width + ' × ' + source.height + ' · native PNG';
-      this.el.capturePreviewNote.textContent = 'Exact current frame · includes accumulated trails';
+      text(this.el.captureSummary, source.width + ' × ' + source.height + ' · native PNG');
+      text(this.el.capturePreviewNote, 'Exact current frame · includes accumulated trails');
     }
-    this.el.exportButton.disabled = video && !this.captureSpec;
-    Object.assign(this.el.capturePreview, { width: source.width, height: source.height });
+    if (this.el.exportButton.disabled !== (video && !this.captureSpec))
+      this.el.exportButton.disabled = video && !this.captureSpec;
+    if (this.el.capturePreview.width !== source.width) this.el.capturePreview.width = source.width;
+    if (this.el.capturePreview.height !== source.height)
+      this.el.capturePreview.height = source.height;
     this.el.capturePreview.getContext('2d', { alpha: false }).drawImage(source, 0, 0);
   }
   async exportVideo() {
