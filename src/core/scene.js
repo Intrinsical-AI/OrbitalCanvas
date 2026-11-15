@@ -1,5 +1,5 @@
 import { DEFAULTS } from './config.js';
-import { euclidean } from './geometry/euclidean.js';
+import { orbitPoint } from './geometry/euclidean.js';
 import { evictOldest, getSpawner, layoutRing, radialLevels } from './spawner.js';
 import { stepRing, syncRingTrig } from './ring.js';
 
@@ -23,7 +23,6 @@ export class Scene {
    */
   constructor(overrides = {}) {
     this.config = { ...DEFAULTS, ...overrides };
-    this.geometry = euclidean;
     this.restart();
   }
 
@@ -60,25 +59,37 @@ export class Scene {
    * @returns {boolean} True if a rebuild was performed.
    */
   setMany(changes) {
-    let rebuild = false;
-
-    for (const [key, value] of changes) {
+    const changed = new Set();
+    for (const [key, value] of new Map(changes)) {
       if (this.config[key] === value) continue;
       this.config[key] = value;
-      rebuild ||=
-        key === 'spawnMode' || (key === 'ringCount' && this.config.spawnMode === 'static');
+      changed.add(key);
     }
+    if (!changed.size) return false;
+
+    const rebuild =
+      changed.has('spawnMode') || (changed.has('ringCount') && this.config.spawnMode === 'static');
 
     if (rebuild) this.restart();
     else {
-      this.rings.forEach((ring, index) => {
-        ring.tilt = ring.orientationSlot * this.config.planeAngle;
-        ring.yaw = ring.tilt;
-        syncRingTrig(ring);
-        layoutRing(ring, this.config, index);
-      });
-      this.state.nextRadialSlot %= radialLevels(this.config);
-      if (this.config.spawnMode === 'generative') evictOldest(this.rings, this.config.maxRings);
+      const planesChanged = changed.has('planeAngle');
+      const radiiChanged =
+        changed.has('innerRatio') ||
+        (changed.has('ringSpacing') && this.config.spawnMode === 'generative');
+      if (planesChanged || radiiChanged) {
+        this.rings.forEach((ring, index) => {
+          if (planesChanged) {
+            ring.tilt = ring.orientationSlot * this.config.planeAngle;
+            ring.yaw = ring.tilt;
+            syncRingTrig(ring);
+          }
+          if (radiiChanged) layoutRing(ring, this.config, index);
+        });
+      }
+      if (this.config.spawnMode === 'generative') {
+        if (radiiChanged) this.state.nextRadialSlot %= radialLevels(this.config);
+        if (changed.has('maxRings')) evictOldest(this.rings, this.config.maxRings);
+      }
     }
     return rebuild;
   }
@@ -111,7 +122,7 @@ export class Scene {
    * Visit every particle using one transient position. Copy it if retaining positions.
    *
    * Iteration order is ring creation order, which the renderer relies on for chord
-   * indexing and for painter's-order fallback when depth sorting is disabled.
+   * indexing.
    *
    * @param {(position: import('./geometry/euclidean.js').Vec3, ring: import('./ring.js').Ring,
    *   index: number, count: number) => void} callback
@@ -121,9 +132,22 @@ export class Scene {
     const position = { x: 0, y: 0, z: 0 };
     for (const ring of this.state.rings) {
       for (let i = 0; i < count; i++) {
-        this.geometry.orbitPoint(ring, i, count, position);
+        orbitPoint(ring, i, count, position);
         callback(position, ring, i, count);
       }
     }
+  }
+}
+
+/** Advance the whole requested interval with bounded simulation steps and Safe limits. */
+export function stepScene(scene, dt, rangeMode) {
+  const elapsed = Number.isFinite(dt) && dt > 0 ? dt : 0;
+  if (elapsed > 120) throw new RangeError('Simulation interval cannot exceed 120 seconds.');
+  const count = Math.ceil(elapsed * 10);
+  const step = count ? elapsed / count : 0;
+  if (rangeMode === 'safe') scene.enforceBudget();
+  for (let index = 0; index < count; index++) {
+    scene.step(step);
+    if (rangeMode === 'safe') scene.enforceBudget();
   }
 }

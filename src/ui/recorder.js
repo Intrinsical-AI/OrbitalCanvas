@@ -1,122 +1,92 @@
-import { FILE_LIMIT, PAYLOAD_LIMIT } from './capture.js';
+import { CaptureScene, PAYLOAD_LIMIT, validateCaptureSpec } from './capture.js';
+import { WorkerCapture } from './worker-client.js';
+import { cancelled } from './capture-errors.js';
 
-/**
- * Video export.
- *
- * Two strategies, in order:
- *
- *  1. **WebCodecs via Mediabunny** — the export drives the animation itself at a fixed
- *     `dt = 1/fps`, so the result is frame-exact and can encode faster than real time.
- *  2. **MediaRecorder** — real-time `captureStream` fallback for browsers without
- *     `VideoEncoder` or an encodable codec. Cannot guarantee frame timing.
- */
+/** Owns a cancellable worker export, or an explicitly allowed real-time fallback. */
 export class Recorder {
-  /**
-   * @param {HTMLCanvasElement} canvas
-   * @param {(state: {recording: boolean, progress: number, note: string}) => void} onState
-   */
   constructor(canvas, onState) {
     this.canvas = canvas;
     this.onState = onState;
     this.recording = false;
+    this.fallback = false;
     this.aborted = false;
     this.cancelCapture = null;
+    this.workerTask = null;
   }
 
-  /** @returns {boolean} True when WebCodecs encoding is available. */
-  static supportsWebCodecs() {
-    return typeof VideoEncoder !== 'undefined';
-  }
-
-  /** Request that an in-flight export stops at the next frame boundary. */
   cancel(reason = cancelled()) {
+    if (!this.recording) return;
     this.aborted = true;
+    this.abortReason = reason;
     this.cancelCapture?.(reason);
   }
 
-  /**
-   * Record and download a clip.
-   *
-   * @param {object} options
-   * @param {number} options.fps
-   * @param {number} options.duration Seconds.
-   * @param {(dt: number) => void} options.renderFrame Advance the scene by `dt` and draw.
-   *   Both strategies own the clock while the application's live loop is stopped.
-   * @returns {Promise<{filename: string, strategy: string}>}
-   */
-  async record({ fps, duration, renderFrame }) {
+  /** No page-thread encoder or simulation callback is retained by the worker job. */
+  async record({
+    document,
+    width = this.canvas.width,
+    height = this.canvas.height,
+    format = 'share',
+    fps,
+    duration,
+  }) {
     if (this.recording) throw new Error('A recording is already in progress.');
+    const spec = validateCaptureSpec({ width, height, format, fps, duration });
     this.recording = true;
+    this.fallback = false;
     this.aborted = false;
-
+    this.abortReason = null;
     try {
-      const result = Recorder.supportsWebCodecs()
-        ? await this.#recordWithWebCodecs({ fps, duration, renderFrame })
-        : await this.#recordWithMediaRecorder({ fps, duration, renderFrame });
-      return result;
+      this.#report(true, 0, 'preparing encoder');
+      this.workerTask = new WorkerCapture((state) => {
+        const progress =
+          state.type === 'progress' ? state.progress : state.phase === 'finalizing' ? 1 : 0;
+        const note =
+          state.phase === 'finalizing'
+            ? 'Finalizing video'
+            : state.codec
+              ? `${state.codec.toUpperCase()} · frame-exact`
+              : 'preparing encoder';
+        this.#report(true, progress, note);
+      });
+      this.cancelCapture = (reason) => this.workerTask?.cancel(reason);
+      let encoded;
+      try {
+        encoded = await this.workerTask.run({ document, spec });
+      } catch (error) {
+        if (this.aborted) throw this.abortReason;
+        if (error.code !== 'CAPTURE_UNAVAILABLE') throw error;
+        if (format === 'share') throw sharingUnavailable();
+        return await this.#recordWithMediaRecorder({ document, ...spec });
+      }
+      if (this.aborted) throw this.abortReason;
+      const blob = new Blob([encoded.buffer], { type: encoded.mimeType });
+      const filename = `orbital-canvas-${timestamp()}.${encoded.extension}`;
+      download(blob, filename);
+      return { filename, strategy: `webcodecs:${encoded.codec}` };
     } finally {
+      this.workerTask = null;
+      this.cancelCapture = null;
       this.recording = false;
+      this.fallback = false;
       this.#report(false, 0, '');
     }
   }
 
-  /**
-   * @param {boolean} recording
-   * @param {number} progress 0..1
-   * @param {string} note
-   */
   #report(recording, progress, note) {
     this.onState?.({ recording, progress, note });
   }
 
-  /**
-   * Deterministic offline export. The scene is stepped by exactly `1/fps` per frame, so
-   * the output contains precisely `duration * fps` frames regardless of how fast the
-   * machine renders them.
-   *
-   * @param {{fps: number, duration: number, renderFrame: (dt: number) => void}} options
-   */
-  async #recordWithWebCodecs({ fps, duration, renderFrame }) {
-    this.#report(true, 0, 'preparing encoder');
-
-    // Loaded on demand: the encoder is a large dependency and most sessions never export.
-    const { encode, selectCodec } = await import('./webcodecs-export.js');
-
-    const codec = await selectCodec(this.canvas);
-    if (this.aborted) throw cancelled();
-    if (!codec) {
-      return this.#recordWithMediaRecorder({ fps, duration, renderFrame });
-    }
-
-    const { blob, extension } = await encode({
-      canvas: this.canvas,
-      codec,
-      fps,
-      duration,
-      renderFrame,
-      onProgress: (progress) =>
-        this.#report(true, progress, `${codec.toUpperCase()} · frame-exact`),
-      isAborted: () => this.aborted,
-    });
-
-    if (this.aborted) throw cancelled();
-    const filename = `orbital-canvas-${timestamp()}.${extension}`;
-    download(blob, filename);
-    return { filename, strategy: `webcodecs:${codec}` };
-  }
-
-  /**
-   * Real-time fallback. Frame timing is at the browser's discretion, so the clip may drop
-   * frames under load; used when WebCodecs has no usable encoder.
-   *
-   * @param {{fps: number, duration: number, renderFrame: (dt: number) => void}} options
-   */
-  async #recordWithMediaRecorder({ fps, duration, renderFrame }) {
+  /** Real-time is selected only for capability failure before deterministic encoding starts. */
+  async #recordWithMediaRecorder({ document: captureDocument, width, height, fps, duration }) {
     this.fallback = true;
-    if (typeof MediaRecorder === 'undefined' || !this.canvas.captureStream) {
+    if (typeof MediaRecorder === 'undefined' || !this.canvas.captureStream)
       throw new Error('This browser supports neither WebCodecs nor MediaRecorder capture.');
-    }
-
+    if ((this.canvas.ownerDocument ?? globalThis.document)?.hidden)
+      throw new Error('Real-time capture needs a visible tab. Keep this tab open and try again.');
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const scene = new CaptureScene(captureDocument, this.canvas);
     const stream = this.canvas.captureStream(fps);
     let recorder;
     let rafId = null;
@@ -130,36 +100,40 @@ export class Recorder {
       let rejectCapture;
       recorder.addEventListener('dataavailable', (event) => {
         payloadBytes += event.data.size;
-        if (payloadBytes > PAYLOAD_LIMIT) {
+        if (payloadBytes > PAYLOAD_LIMIT)
           rejectCapture?.(
             new Error('Capture exceeded the 60 MiB limit. Reduce duration, FPS or resolution.')
           );
-        } else if (event.data.size > 0) chunks.push(event.data);
+        else if (event.data.size > 0) chunks.push(event.data);
       });
-
       await new Promise((resolve, reject) => {
         rejectCapture = reject;
         recorder.addEventListener('stop', resolve, { once: true });
         recorder.addEventListener(
           'error',
           (event) => reject(event.error ?? new Error('Capture failed.')),
-          {
-            once: true,
-          }
+          { once: true }
         );
-        // Cancellation must also work in a background tab where rAF is suspended.
         this.cancelCapture = (reason = cancelled()) => reject(reason);
         const startedAt = performance.now();
         let previousElapsed = 0;
+        let renderedFrame = 0;
         const tick = (now) => {
           rafId = null;
           try {
+            if (this.aborted) {
+              reject(this.abortReason);
+              return;
+            }
             const elapsed = Math.min(duration, Math.max(0, (now - startedAt) / 1000));
-            renderFrame(elapsed - previousElapsed);
-            previousElapsed = elapsed;
-            this.#report(true, elapsed / duration, 'MediaRecorder · real time');
-            if (this.aborted) this.cancelCapture();
-            else if (elapsed >= duration) recorder.stop();
+            const dueFrame = Math.floor(elapsed * fps + 1e-7);
+            if (dueFrame > renderedFrame || elapsed >= duration) {
+              scene.render(elapsed - previousElapsed);
+              previousElapsed = elapsed;
+              renderedFrame = dueFrame;
+              this.#report(true, elapsed / duration, 'MediaRecorder · real time');
+            }
+            if (elapsed >= duration) recorder.stop();
             else rafId = requestAnimationFrame(tick);
           } catch (error) {
             reject(error);
@@ -169,8 +143,7 @@ export class Recorder {
         this.#report(true, 0, 'MediaRecorder · real time');
         rafId = requestAnimationFrame(tick);
       });
-
-      if (this.aborted) throw cancelled();
+      if (this.aborted) throw this.abortReason;
       const actualType = recorder.mimeType || chunks.find((chunk) => chunk.type)?.type || mimeType;
       const extension = { 'video/webm': 'webm', 'video/mp4': 'mp4' }[
         actualType?.split(';')[0].trim().toLowerCase()
@@ -178,7 +151,6 @@ export class Recorder {
       if (!extension) throw new Error(`Unsupported capture format: ${actualType || 'unknown'}.`);
       const blob = new Blob(chunks, { type: actualType });
       if (!blob.size) throw new Error('Capture produced no video data.');
-      if (blob.size > FILE_LIMIT) throw new Error('Capture exceeded the 64 MiB file limit.');
       const filename = `orbital-canvas-${timestamp()}.${extension}`;
       download(blob, filename);
       return { filename, strategy: 'mediarecorder' };
@@ -194,9 +166,10 @@ export class Recorder {
   }
 }
 
-/** @returns {DOMException} The error an export rejects with when cancelled. */
-export function cancelled() {
-  return new DOMException('Recording cancelled', 'AbortError');
+function sharingUnavailable() {
+  return new Error(
+    'H.264/MP4 encoding is unavailable in this browser. Try another browser or choose Automatic for other video formats.'
+  );
 }
 
 /** @returns {string} Filesystem-safe UTC timestamp. */

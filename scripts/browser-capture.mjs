@@ -14,10 +14,10 @@ async function closeCapture(h, page, context) {
         name: 'capture_state',
         clicks: window.captureExportClicks,
         pointerEvents: window.capturePointerEvents,
-        exporting: app?.exporting,
-        recording: app?.recorder?.recording,
-        fallback: app?.recorder?.fallback,
-        specification: app?.captureSpec,
+        exporting: app?.capture?.exporting,
+        recording: app?.capture?.recorder?.recording,
+        fallback: app?.capture?.recorder?.fallback,
+        specification: app?.capture?.spec,
         error: field('captureError').textContent,
         progress: field('recordingIndicator').textContent,
         exportDisabled: field('exportButton').disabled,
@@ -51,21 +51,119 @@ async function clickExport(page) {
 async function setup(h, options = {}) {
   const result = await h.page({ viewport: { width: 640, height: 560 }, ...options });
   const { page } = result;
-  await page.evaluate(() => {
-    window.captureTracks = [];
-    const original = HTMLCanvasElement.prototype.captureStream;
-    HTMLCanvasElement.prototype.captureStream = function (...args) {
-      const stream = original.apply(this, args);
-      window.captureTracks.push(...stream.getTracks());
-      return stream;
-    };
-  });
+  await page.evaluate(
+    ({ fallback }) => {
+      window.captureTracks = [];
+      window.captureWorkers = [];
+      window.captureWorkerEvents = [];
+      const NativeWorker = window.Worker;
+      if (fallback)
+        Object.defineProperty(window, 'Worker', { value: undefined, configurable: true });
+      else if (NativeWorker)
+        window.Worker = class extends NativeWorker {
+          constructor(...args) {
+            super(...args);
+            if (!String(args[0]).includes('capture-worker')) return;
+            this.ended = false;
+            window.captureWorkers.push(this);
+            this.addEventListener('message', ({ data }) => {
+              if (data.type === 'worker-probe') window.captureWorkerEvents.push(data);
+            });
+          }
+          terminate() {
+            this.ended = true;
+            super.terminate();
+          }
+        };
+      const original = HTMLCanvasElement.prototype.captureStream;
+      HTMLCanvasElement.prototype.captureStream = function (...args) {
+        const stream = original.apply(this, args);
+        window.captureTracks.push(...stream.getTracks());
+        return stream;
+      };
+    },
+    { fallback: options.fallback === true }
+  );
   await page.locator('#captureButton').click();
   await page.locator('#captureType').selectOption('video');
+  await page.locator('#videoFormatInput').selectOption('auto');
   await page.locator('#fpsInput').selectOption('30');
   await page.locator('#durationInput').fill('2');
   await page.locator('#durationInput').dispatchEvent('change');
   return result;
+}
+
+async function workerCapabilities(page) {
+  return page.evaluate(async () => {
+    if (typeof Worker !== 'function') return false;
+    const url = URL.createObjectURL(
+      new Blob(
+        [
+          `postMessage(typeof OffscreenCanvas === 'function' && typeof VideoEncoder === 'function' && typeof VideoFrame === 'function')`,
+        ],
+        { type: 'text/javascript' }
+      )
+    );
+    const worker = new Worker(url, { type: 'module' });
+    try {
+      return await new Promise((resolve, reject) => {
+        worker.onmessage = ({ data }) => resolve(data);
+        worker.onerror = reject;
+      });
+    } finally {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    }
+  });
+}
+
+async function probeWorker(page, mode) {
+  const modes = Array.isArray(mode) ? [...mode] : [mode];
+  await page.route(/capture-worker[^/]*\.js(?:\?.*)?$/, async (route) => {
+    const response = await route.fetch();
+    const injection = modes.shift() ?? 'normal';
+    const prefix = `(${function install(mode) {
+      const encoders = [],
+        closes = [];
+      let exporting = false,
+        release;
+      const post = self.postMessage.bind(self);
+      self.postMessage = (message, ...args) => {
+        if (message.type === 'phase' && message.phase === 'encoding') exporting = true;
+        if (message.type === 'error' || message.type === 'complete')
+          post({
+            type: 'worker-probe',
+            kind: 'resources',
+            states: encoders.map((encoder) => encoder.state),
+            closes: encoders.map((encoder) => closes.filter((closed) => closed === encoder).length),
+          });
+        post(message, ...args);
+      };
+      const proto = VideoEncoder.prototype;
+      const original = { configure: proto.configure, close: proto.close, flush: proto.flush };
+      proto.configure = function (...args) {
+        if (!encoders.includes(this)) encoders.push(this);
+        return original.configure.apply(this, args);
+      };
+      proto.close = function (...args) {
+        closes.push(this);
+        return original.close.apply(this, args);
+      };
+      proto.flush = function (...args) {
+        if (!exporting || mode === 'normal') return original.flush.apply(this, args);
+        post({ type: 'worker-probe', kind: 'flush' });
+        if (mode === 'fail')
+          return Promise.reject(new Error('Injected native encoder flush failure'));
+        return new Promise((resolve) => {
+          release = resolve;
+        }).then(() => original.flush.apply(this, args));
+      };
+      self.addEventListener('message', ({ data }) => {
+        if (data.type === 'release-probe') release?.();
+      });
+    }.toString()})(${JSON.stringify(injection)});\n`;
+    await route.fulfill({ response, body: prefix + (await response.text()) });
+  });
 }
 
 async function videoReceipt(h, download, name, exact = true) {
@@ -81,7 +179,7 @@ async function videoReceipt(h, download, name, exact = true) {
         '-select_streams',
         'v:0',
         '-show_entries',
-        'stream=nb_read_frames,r_frame_rate,width,height:format=duration',
+        'stream=codec_name,pix_fmt,nb_read_frames,r_frame_rate,width,height:format=duration',
         '-of',
         'json',
         file,
@@ -125,7 +223,7 @@ export function captureCases(get) {
       });
       await page.locator('#captureButton').click();
       const expected = await page.evaluate(
-        () => window.smokeApp.pngFrame.toDataURL().split(',')[1]
+        () => window.smokeApp.capture.pngFrame.toDataURL().split(',')[1]
       );
       const pending = page.waitForEvent('download');
       await clickExport(page);
@@ -138,116 +236,111 @@ export function captureCases(get) {
       await closeCapture(get(), page, context);
     }
   });
-  test('built WebCodecs handles flush failure, releases encoders and retries successfully', async (t) => {
+  test('built worker handles native flush failure and recovers on a fresh export', async (t) => {
     const { page, context, errors } = await setup(get(), { source: false });
     try {
-      if (!(await page.evaluate(() => typeof VideoEncoder === 'function'))) {
-        t.skip(
-          'WebCodecs encoding is unavailable in this engine; MediaRecorder is exercised separately.'
-        );
+      if (!(await workerCapabilities(page))) {
+        t.skip('Worker WebCodecs is unavailable; real-time capture is exercised separately.');
         return;
       }
-      await page.evaluate(() => {
-        window.probe = { encoders: [], exports: new WeakSet(), closes: [], failed: false };
-        const proto = VideoEncoder.prototype,
-          original = { configure: proto.configure, close: proto.close, flush: proto.flush };
-        proto.configure = function (...args) {
-          if (!window.probe.encoders.includes(this)) window.probe.encoders.push(this);
-          if (Number.isFinite(args[0]?.framerate)) window.probe.exports.add(this);
-          return original.configure.apply(this, args);
-        };
-        proto.close = function (...args) {
-          window.probe.closes.push(this);
-          return original.close.apply(this, args);
-        };
-        proto.flush = function (...args) {
-          // Firefox probes codecs with temporary encoders before starting the export.
-          if (!window.probe.exports.has(this)) return original.flush.apply(this, args);
-          return new Promise((resolve) => {
-            window.releaseFlush = resolve;
-          }).then(() => {
-            window.releaseFlush = null;
-            if (!window.probe.failed) {
-              window.probe.failed = true;
-              throw new Error('Injected native encoder flush failure');
-            }
-            return original.flush.apply(this, args);
-          });
-        };
-        window.restoreEncoder = () => Object.assign(proto, original);
-      });
+      await probeWorker(page, 'fail');
       await clickExport(page);
-      await expect(page.locator('#cancelExportButton')).toBeVisible();
-      await page.waitForFunction(() => typeof window.releaseFlush === 'function');
-      await page.evaluate(() => window.releaseFlush());
       await expect(page.locator('#captureError')).toContainText(
         'Injected native encoder flush failure'
       );
       await expect(page.locator('#exportButton')).toBeEnabled();
-      assert.ok(
-        await page.evaluate(
-          () =>
-            window.probe.encoders.length > 0 &&
-            window.probe.encoders.every((e) => e.state === 'closed')
-        )
+      const resources = await page.evaluate(() =>
+        window.captureWorkerEvents.find((event) => event.kind === 'resources')
       );
       assert.ok(
-        await page.evaluate(() =>
-          window.probe.encoders.every(
-            (e) => window.probe.closes.filter((c) => c === e).length === 1
-          )
-        )
+        resources.states.length > 0 && resources.states.every((state) => state === 'closed')
       );
+      assert.ok(resources.closes.every((count) => count === 1));
       const pending = page.waitForEvent('download');
       await clickExport(page);
-      await page.waitForFunction(() => typeof window.releaseFlush === 'function');
-      await page.evaluate(() => window.releaseFlush());
-      const download = await pending;
-      await page.evaluate(() => window.restoreEncoder());
-      await expect(page.locator('#exportButton')).toBeEnabled();
-      await videoReceipt(get(), download, 'webcodecs-recovery');
+      await videoReceipt(get(), await pending, 'worker-recovery');
+      assert.ok(await page.evaluate(() => window.captureWorkers.every((worker) => worker.ended)));
       assert.deepEqual(errors, []);
     } finally {
       await closeCapture(get(), page, context);
     }
   });
-  test('detached video survives editor resize and DPR without advancing the editor', async (t) => {
+  test('cancelling a worker blocked in native flush never waits for the encoder', async (t) => {
+    const { page, context, errors } = await setup(get(), { source: false });
+    try {
+      if (!(await workerCapabilities(page))) {
+        t.skip('Worker WebCodecs is unavailable.');
+        return;
+      }
+      await probeWorker(page, ['hold', 'normal', 'hold', 'normal', 'hold', 'normal']);
+      let downloads = 0;
+      page.on('download', () => downloads++);
+      for (let cycle = 0; cycle < 3; cycle++) {
+        await clickExport(page);
+        await page.waitForFunction(
+          (count) =>
+            window.captureWorkerEvents.filter((event) => event.kind === 'flush').length >= count,
+          cycle + 1
+        );
+        await page.locator('#cancelExportButton').click();
+        await expect(page.locator('#captureError')).toContainText('cancelled');
+        await expect(page.locator('#exportButton')).toBeEnabled();
+        assert.equal(downloads, cycle);
+        assert.ok(await page.evaluate(() => window.captureWorkers.every((worker) => worker.ended)));
+        const pending = page.waitForEvent('download');
+        await clickExport(page);
+        await videoReceipt(get(), await pending, 'worker-cancel-retry-' + (cycle + 1));
+        await expect(page.locator('#exportButton')).toBeEnabled();
+      }
+      assert.equal(downloads, 3);
+      assert.ok(
+        await page.evaluate(
+          () =>
+            window.captureWorkers.length === 6 &&
+            window.captureWorkers.every((worker) => worker.ended)
+        )
+      );
+      const closures = await page.evaluate(() =>
+        window.captureWorkerEvents.filter((event) => event.kind === 'resources')
+      );
+      assert.equal(closures.length, 3);
+      assert.ok(
+        closures.every(
+          (event) =>
+            event.states.every((state) => state === 'closed') &&
+            event.closes.every((count) => count === 1)
+        )
+      );
+      assert.deepEqual(errors, []);
+    } finally {
+      await closeCapture(get(), page, context);
+    }
+  });
+  test('detached worker survives editor resize and DPR without advancing the editor', async (t) => {
     const { page, context, errors } = await setup(get());
     try {
-      if (!(await page.evaluate(() => typeof VideoEncoder === 'function'))) {
-        t.skip(
-          'WebCodecs encoding is unavailable in this engine; MediaRecorder is exercised separately.'
-        );
+      if (!(await workerCapabilities(page))) {
+        t.skip('Worker WebCodecs is unavailable.');
         return;
       }
       const before = await page.evaluate(() => ({
         time: window.smokeApp.scene.time,
         phases: window.smokeApp.scene.rings.map((r) => r.phase),
       }));
-      await page.evaluate(() => {
-        const proto = VideoEncoder.prototype;
-        const original = { configure: proto.configure, flush: proto.flush };
-        const exports = new WeakSet();
-        proto.configure = function (...args) {
-          if (Number.isFinite(args[0]?.framerate)) exports.add(this);
-          return original.configure.apply(this, args);
-        };
-        proto.flush = function (...args) {
-          if (!exports.has(this)) return original.flush.apply(this, args);
-          return new Promise((resolve) => {
-            window.releaseFlush = () => resolve();
-          }).then(() => original.flush.apply(this, args));
-        };
-      });
+      await probeWorker(page, 'hold');
       const pending = page.waitForEvent('download');
       await clickExport(page);
-      await page.waitForFunction(() => typeof window.releaseFlush === 'function');
+      await page.waitForFunction(() =>
+        window.captureWorkerEvents.some((event) => event.kind === 'flush')
+      );
       await page.setViewportSize({ width: 700, height: 620 });
       await page.evaluate(() => {
         Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
         window.smokeApp.viewport.sync();
       });
-      await page.evaluate(() => window.releaseFlush());
+      await page.evaluate(() =>
+        window.captureWorkers.at(-1).postMessage({ type: 'release-probe' })
+      );
       await videoReceipt(get(), await pending, 'resize-safe');
       assert.deepEqual(
         await page.evaluate(() => ({
@@ -266,15 +359,20 @@ export function captureCases(get) {
     try {
       const result = await page.evaluate(async () => {
         const { CaptureScene } = await import('/src/ui/capture.js');
-        const doc = window.smokeApp.captureDocument;
-        const a = new CaptureScene(doc, { width: 320, height: 320 });
+        const doc = window.smokeApp.capture.document;
+        const create = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 320;
+          return new CaptureScene(doc, canvas);
+        };
+        const a = create();
         const zero = a.canvas.toDataURL();
         a.render(0);
         const repeatedZero = a.canvas.toDataURL();
         for (let i = 0; i < 30; i++) a.render(1 / 30);
         const first = a.canvas.toDataURL();
         window.smokeApp.scene.step(20);
-        const b = new CaptureScene(doc, { width: 320, height: 320 });
+        const b = create();
         for (let i = 0; i < 30; i++) b.render(1 / 30);
         const second = b.canvas.toDataURL();
         const pixels = async (url) => {
@@ -288,9 +386,7 @@ export function captureCases(get) {
           ctx.drawImage(image, 0, 0);
           return ctx.getImageData(0, 0, 320, 320).data;
         };
-        const comparePixels = async (left, right) => {
-          const x = await pixels(left),
-            y = await pixels(right);
+        const compareArrays = (x, y) => {
           let differingPixels = 0,
             maxDelta = 0;
           for (let i = 0; i < x.length; i += 4) {
@@ -304,6 +400,35 @@ export function captureCases(get) {
           }
           return { differingPixels, maxDelta };
         };
+        const comparePixels = async (left, right) =>
+          compareArrays(await pixels(left), await pixels(right));
+        let workerFrameZero = null;
+        if (typeof Worker === 'function') {
+          const moduleUrl = new URL('/src/ui/capture.js', location.href).href;
+          const source = `import { CaptureScene } from ${JSON.stringify(moduleUrl)};
+            onmessage = ({data}) => {
+              if (typeof OffscreenCanvas !== 'function') { postMessage(null); return; }
+              const canvas = new OffscreenCanvas(320,320);
+              if (!canvas.getContext('2d', {alpha:false,willReadFrequently:true})) { postMessage(null); return; }
+              const capture = new CaptureScene(data, canvas);
+              const pixels = capture.context.getImageData(0,0,320,320).data;
+              postMessage(pixels.buffer, [pixels.buffer]);
+            };`;
+          const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+          const worker = new Worker(url, { type: 'module' });
+          try {
+            const buffer = await new Promise((resolve, reject) => {
+              worker.onmessage = ({ data }) => resolve(data);
+              worker.onerror = reject;
+              worker.postMessage(doc);
+            });
+            if (buffer)
+              workerFrameZero = compareArrays(await pixels(zero), new Uint8ClampedArray(buffer));
+          } finally {
+            worker.terminate();
+            URL.revokeObjectURL(url);
+          }
+        }
         return {
           zeroPngEqual: zero === repeatedZero,
           timelinePngEqual: first === second,
@@ -315,6 +440,7 @@ export function captureCases(get) {
           expectedLiveRings: doc.parameters.maxRings,
           zeroPixels: await comparePixels(zero, repeatedZero),
           timelinePixels: await comparePixels(first, second),
+          workerFrameZero,
           images:
             zero === repeatedZero && first === second
               ? []
@@ -334,6 +460,12 @@ export function captureCases(get) {
       assert.equal(result.zeroPngEqual, true, JSON.stringify(diagnostic));
       assert.equal(result.timelinePngEqual, true, JSON.stringify(diagnostic));
       assert.equal(result.liveRings, result.expectedLiveRings, JSON.stringify(diagnostic));
+      if (result.workerFrameZero)
+        assert.deepEqual(
+          result.workerFrameZero,
+          { differingPixels: 0, maxDelta: 0 },
+          JSON.stringify(diagnostic)
+        );
     } finally {
       await closeCapture(get(), page, context);
     }
@@ -390,12 +522,74 @@ export function captureCases(get) {
         window.smokeApp.destroy();
         window.smokeApp.destroy();
       });
-      await page.waitForFunction(() => !window.smokeApp.exporting);
+      await page.waitForFunction(() => !window.smokeApp.capture.exporting);
       assert.equal(await page.evaluate(() => window.smokeApp.running), false);
       assert.ok(
         await page.evaluate(() => window.captureTracks.every((t) => t.readyState === 'ended'))
       );
       assert.equal(downloads, 0);
+    } finally {
+      await closeCapture(get(), page, context);
+    }
+  });
+  test('H.264 sharing produces an AVC MP4 when the encoder is available', async (t) => {
+    const { page, context, errors } = await setup(get());
+    try {
+      await page.locator('#videoFormatInput').selectOption('share');
+      const supported = await page.evaluate(async () => {
+        if (typeof Worker !== 'function') return false;
+        const canvas = window.smokeApp.capture.previewScene.canvas;
+        const moduleUrl = new URL('/src/ui/webcodecs-export.js', location.href).href;
+        const source = `import { selectCodec } from ${JSON.stringify(moduleUrl)};
+          if (typeof OffscreenCanvas !== 'function' || typeof VideoEncoder !== 'function' || typeof VideoFrame !== 'function') postMessage(null);
+          else selectCodec(new OffscreenCanvas(${canvas.width}, ${canvas.height}), {fps:30,format:'share'}).then(codec => postMessage(codec)).catch(error => postMessage({error:error.message}));`;
+        const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+        const worker = new Worker(url, { type: 'module' });
+        try {
+          const result = await new Promise((resolve, reject) => {
+            worker.onmessage = ({ data }) => resolve(data);
+            worker.onerror = reject;
+          });
+          if (result?.error) throw new Error(result.error);
+          return result === 'avc';
+        } finally {
+          worker.terminate();
+          URL.revokeObjectURL(url);
+        }
+      });
+      if (!supported) {
+        t.skip(
+          'Native H.264 encoding is unavailable; the sharing error path is tested separately.'
+        );
+        return;
+      }
+      const pending = page.waitForEvent('download');
+      await clickExport(page);
+      const download = await pending;
+      assert.equal(path.extname(download.suggestedFilename()), '.mp4');
+      const stream = await videoReceipt(get(), download, 'h264-sharing');
+      assert.equal(stream.codec_name, 'h264');
+      assert.equal(stream.pix_fmt, 'yuv420p');
+      assert.deepEqual(errors, []);
+    } finally {
+      await closeCapture(get(), page, context);
+    }
+  });
+  test('H.264 sharing reports unavailable encoding without changing the format', async () => {
+    const { page, context, errors } = await setup(get(), { fallback: true, source: false });
+    try {
+      await page.locator('#videoFormatInput').selectOption('share');
+      let downloads = 0;
+      page.on('download', () => downloads++);
+      await clickExport(page);
+      await expect(page.locator('#captureError')).toContainText(
+        'H.264/MP4 encoding is unavailable'
+      );
+      await expect(page.locator('#videoFormatInput')).toHaveValue('share');
+      await expect(page.locator('#exportButton')).toBeEnabled();
+      assert.equal(await page.evaluate(() => window.captureTracks.length), 0);
+      assert.equal(downloads, 0);
+      assert.deepEqual(errors, []);
     } finally {
       await closeCapture(get(), page, context);
     }

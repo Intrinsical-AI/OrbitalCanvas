@@ -10,7 +10,6 @@ import {
 const vec3 = (x, y, z) => ({ x: x / 400, y: y / 400, z: z / 400 });
 
 const VIEWPORT = { width: 800, height: 600 };
-const FIT_RADIUS = 1;
 
 /**
  * @param {import('../src/view/projectors.js').Projector} projector
@@ -35,7 +34,7 @@ describe('TopOrthoProjector — the 2D view', () => {
   /** @returns {TopOrthoProjector} */
   const make = () => {
     const p = new TopOrthoProjector();
-    p.configure(VIEWPORT, FIT_RADIUS);
+    p.configure(VIEWPORT);
     return p;
   };
 
@@ -50,7 +49,7 @@ describe('TopOrthoProjector — the 2D view', () => {
 
   it('is strictly flat: uniform scale, zero depth, no sorting', () => {
     const projector = make();
-    expect(projector.sortsByDepth).toBe(false);
+    expect(projector.usesDepthCue).toBe(false);
     for (const z of [-500, 0, 500]) {
       const out = project(projector, vec3(50, 50, z));
       expect(out.scale).toBe(1);
@@ -75,7 +74,7 @@ describe('TopOrthoProjector — the 2D view', () => {
 
   it('fits the scene inside the shortest viewport axis', () => {
     const projector = make();
-    const edge = project(projector, vec3(FIT_RADIUS, 0, 0));
+    const edge = project(projector, vec3(400, 0, 0));
     expect(edge.sx - 400).toBeLessThan(VIEWPORT.height / 2);
     expect(edge.sx).toBeGreaterThan(400);
   });
@@ -90,7 +89,7 @@ describe('TopOrthoProjector — the 2D view', () => {
   it('ignores camera state completely', () => {
     const camera = new Camera();
     const projector = createProjector('2d', camera);
-    projector.configure(VIEWPORT, FIT_RADIUS);
+    projector.configure(VIEWPORT);
     const before = project(projector, vec3(90, 40, 30));
     camera.orbitBy(400, 200);
     camera.zoomBy(2);
@@ -104,7 +103,7 @@ describe('PerspectiveProjector — the 3D view', () => {
   /** @returns {PerspectiveProjector} */
   const make = (camera = new Camera({ yaw: 0, pitch: 0, zoom: 1 })) => {
     const p = new PerspectiveProjector(camera);
-    p.configure(VIEWPORT, FIT_RADIUS);
+    p.configure(VIEWPORT);
     return p;
   };
 
@@ -116,9 +115,9 @@ describe('PerspectiveProjector — the 3D view', () => {
     expect(near.depth).not.toBe(far.depth);
   });
 
-  it('sorts by depth and reports a perspective scale', () => {
+  it('uses a depth cue and reports a perspective scale', () => {
     const projector = make();
-    expect(projector.sortsByDepth).toBe(true);
+    expect(projector.usesDepthCue).toBe(true);
     const near = project(projector, vec3(0, 100, 400));
     const far = project(projector, vec3(0, 100, -400));
     expect(near.scale).toBeGreaterThan(far.scale);
@@ -174,7 +173,7 @@ describe('PerspectiveProjector — the 3D view', () => {
     const camera = new Camera({ yaw: 0, pitch: 0, zoom: 1 });
     const perspective = make(camera);
     const ortho = new TopOrthoProjector();
-    ortho.configure(VIEWPORT, FIT_RADIUS);
+    ortho.configure(VIEWPORT);
 
     const p = vec3(150, -90, 0);
     const a = project(perspective, p);

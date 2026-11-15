@@ -95,4 +95,24 @@ describe('Viewport', () => {
     expect(queries.at(-1).media).toBe('(resolution: 3dppx)');
     expect(currentDpr()).toBe(2);
   });
+
+  it('keeps watching raw DPR changes while successive backing densities remain capped', () => {
+    globalThis.window.devicePixelRatio = 3;
+    const resized = vi.fn();
+    const viewport = new Viewport(canvas, ctx, resized);
+    globalThis.window.devicePixelRatio = 4;
+    queries.at(-1).dispatchEvent(new Event('change'));
+    expect(queries.at(-1).media).toBe('(resolution: 4dppx)');
+    expect(canvas.width).toBe(600);
+    expect(resized).toHaveBeenCalledOnce();
+
+    // The 4dppx query changes to false on the next move, even though 3dppx stays false.
+    globalThis.window.devicePixelRatio = 1.5;
+    queries.at(-1).dispatchEvent(new Event('change'));
+    expect(queries.at(-1).media).toBe('(resolution: 1.5dppx)');
+    expect(canvas.width).toBe(450);
+    expect(viewport.dpr).toBe(1.5);
+    expect(resized).toHaveBeenCalledTimes(2);
+    viewport.destroy();
+  });
 });

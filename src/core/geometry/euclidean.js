@@ -30,37 +30,32 @@ function unitCircle(count) {
   }
 }
 
-export const euclidean = {
-  id: 'euclidean',
-  label: 'Euclidean',
+/**
+ * Write a world-space particle position into a caller-owned object.
+ *
+ * No trigonometry per particle: the particle angle comes from a table, the ring phase is
+ * added by angle addition, and the orientation terms are cached on the ring.
+ *
+ * @param {import('../ring.js').Ring} ring
+ * @param {number} index
+ * @param {number} count
+ * @param {Vec3} out
+ * @returns {Vec3}
+ */
+export function orbitPoint(ring, index, count, out) {
+  unitCircle(count);
+  const c = tableCos[index];
+  const s = tableSin[index];
+  // cos/sin(2πi/count + phase)
+  const cosTheta = c * ring.phaseCos - s * ring.phaseSin;
+  const sinTheta = s * ring.phaseCos + c * ring.phaseSin;
 
-  /**
-   * Write a world-space particle position into a caller-owned object.
-   *
-   * No trigonometry per particle: the particle angle comes from a table, the ring phase is
-   * added by angle addition, and the orientation terms are cached on the ring.
-   *
-   * @param {import('../ring.js').Ring} ring
-   * @param {number} index
-   * @param {number} count
-   * @param {Vec3} out
-   * @returns {Vec3}
-   */
-  orbitPoint(ring, index, count, out) {
-    unitCircle(count);
-    const c = tableCos[index];
-    const s = tableSin[index];
-    // cos/sin(2πi/count + phase)
-    const cosTheta = c * ring.phaseCos - s * ring.phaseSin;
-    const sinTheta = s * ring.phaseCos + c * ring.phaseSin;
+  const localX = ring.radius * cosTheta;
+  const localY = ring.radius * sinTheta;
+  const tiltedY = localY * ring.tiltCos;
 
-    const localX = ring.radius * cosTheta;
-    const localY = ring.radius * sinTheta;
-    const tiltedY = localY * ring.tiltCos;
-
-    out.x = localX * ring.yawCos - tiltedY * ring.yawSin;
-    out.y = localX * ring.yawSin + tiltedY * ring.yawCos;
-    out.z = localY * ring.tiltSin;
-    return out;
-  },
-};
+  out.x = localX * ring.yawCos - tiltedY * ring.yawSin;
+  out.y = localX * ring.yawSin + tiltedY * ring.yawCos;
+  out.z = localY * ring.tiltSin;
+  return out;
+}

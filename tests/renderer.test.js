@@ -146,7 +146,7 @@ describe('Renderer', () => {
     for (const view of ['2d', '3d', '3d']) {
       if (view === '3d') camera.orbitBy(100, 50);
       const projector = createProjector(view, camera);
-      projector.configure(viewport, 1);
+      projector.configure(viewport);
       const expected = [];
       scene.forEachParticle((position) => {
         const { sx, sy } = projector.project(position, {});
@@ -341,6 +341,24 @@ describe('Renderer', () => {
     expect(radii.size).toBe(1);
   });
 
+  it.each([
+    [300, 3],
+    [1080, 36],
+  ])('chooses shape detail using the final radius on a %ipx surface', (side, arcs) => {
+    const scene = new Scene({
+      spawnMode: 'static',
+      ringCount: 1,
+      numPoints: 3,
+      size: 1,
+      shape: 'icosahedron',
+      chordAlpha: 0,
+    });
+    const ctx = fakeContext();
+    const renderer = new Renderer(ctx, { width: side, height: side });
+    renderer.render(scene, createProjector('2d', new Camera()), THEME);
+    expect(ctx.calls.arc).toHaveLength(arcs);
+  });
+
   it('varies particle size with depth in the 3D view', () => {
     const { ctx } = renderOnce(
       { ringCount: 4, numPoints: 12, planeAngle: 0.5, shape: 'disc' },
@@ -368,21 +386,21 @@ describe('shapes', () => {
 
   it('traces the icosahedron as twelve sub-discs without filling', () => {
     const ctx = fakeContext();
-    getShape('icosahedron').trace(ctx, { sx: 100, sy: 100, radius: 4, time: 0 });
+    getShape('icosahedron').trace(ctx, { sx: 100, sy: 100, radius: 4, time: 0, pixelScale: 1 });
     expect(ctx.calls.arc).toHaveLength(12);
     expect(ctx.calls.fill).toBe(0);
   });
 
   it('collapses a sub-pixel icosahedron cluster into one disc', () => {
     const ctx = fakeContext();
-    getShape('icosahedron').trace(ctx, { sx: 100, sy: 100, radius: 0.5, time: 0 });
+    getShape('icosahedron').trace(ctx, { sx: 100, sy: 100, radius: 0.5, time: 0, pixelScale: 1 });
     expect(ctx.calls.arc).toEqual([[100, 100, 0.9]]);
   });
 
   it('tumbles the icosahedron with time', () => {
     const at = (time) => {
       const ctx = fakeContext();
-      getShape('icosahedron').trace(ctx, { sx: 0, sy: 0, radius: 4, time });
+      getShape('icosahedron').trace(ctx, { sx: 0, sy: 0, radius: 4, time, pixelScale: 1 });
       return ctx.calls.arc;
     };
     expect(at(1)).not.toEqual(at(0));
@@ -391,7 +409,7 @@ describe('shapes', () => {
 
   it('traces a disc as one arc without filling', () => {
     const ctx = fakeContext();
-    getShape('disc').trace(ctx, { sx: 10, sy: 20, radius: 3, time: 0 });
+    getShape('disc').trace(ctx, { sx: 10, sy: 20, radius: 3, time: 0, pixelScale: 1 });
     expect(ctx.calls.arc).toEqual([[10, 20, 3]]);
     expect(ctx.calls.fill).toBe(0);
   });

@@ -12,6 +12,29 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test -- --maxWorkers=1 --no-file-parallelism
+      - run: npm run build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: production-build
+          path: dist/
+          retention-days: 3
+
+  browser:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,13 +50,24 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm test
-      - run: npm run build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: production-build
+          path: dist/
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run smoke
+      - run: npm run visuals
+        if: matrix.browser == 'chromium'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: matrix.browser == 'chromium' && success()
+        with:
+          name: visual-previews
+          path: |
+            resources/preset-*.png
+            resources/interface.png
+            resources/interface-mobile.png
+          retention-days: 3
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:

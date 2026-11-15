@@ -1,4 +1,42 @@
-/** History stores authored state, never the running simulation or raster trails. */
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function changesBetween(before, after, path = [], changes = []) {
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const beforeExists = Object.hasOwn(before, key),
+      afterExists = Object.hasOwn(after, key),
+      previous = before[key],
+      next = after[key];
+    if (beforeExists && afterExists && isRecord(previous) && isRecord(next)) {
+      changesBetween(previous, next, [...path, key], changes);
+    } else if (beforeExists !== afterExists || !Object.is(previous, next)) {
+      changes.push({
+        path: [...path, key],
+        before: structuredClone(previous),
+        after: structuredClone(next),
+        beforeExists,
+        afterExists,
+      });
+    }
+  }
+  return changes;
+}
+
+function mergeChanges(state, changes, direction) {
+  const merged = structuredClone(state);
+  for (const change of changes) {
+    let target = merged;
+    for (const key of change.path.slice(0, -1)) {
+      if (!isRecord(target[key])) target[key] = {};
+      target = target[key];
+    }
+    const key = change.path.at(-1);
+    if (change[direction + 'Exists']) target[key] = structuredClone(change[direction]);
+    else delete target[key];
+  }
+  return merged;
+}
+
+/** History stores changed document fields, never preferences, simulation or raster trails. */
 export class History {
   constructor(limit = 50) {
     this.limit = limit;
@@ -11,30 +49,36 @@ export class History {
   }
   commit(state) {
     if (!this.pending) return false;
-    const entry = this.pending;
+    const { state: before, label } = this.pending;
     this.pending = null;
-    if (JSON.stringify(entry.state) === JSON.stringify(state)) return false;
-    this.past.push(entry);
+    const changes = changesBetween(before, state);
+    if (!changes.length) return false;
+    this.past.push({ changes, label });
     if (this.past.length > this.limit) this.past.shift();
     this.future = [];
     return true;
   }
-  cancel() {
+  cancel(state) {
     const entry = this.pending;
     this.pending = null;
-    return entry?.state;
+    if (!entry) return null;
+    return {
+      state: mergeChanges(state, changesBetween(entry.state, state), 'before'),
+      label: entry.label,
+    };
   }
   undo(state) {
     this.commit(state);
     const entry = this.past.pop();
     if (!entry) return null;
-    this.future.push({ state: structuredClone(state), label: entry.label });
-    return structuredClone(entry);
+    this.future.push(entry);
+    return { state: mergeChanges(state, entry.changes, 'before'), label: entry.label };
   }
   redo(state) {
+    this.commit(state);
     const entry = this.future.pop();
     if (!entry) return null;
-    this.past.push({ state: structuredClone(state), label: entry.label });
-    return structuredClone(entry);
+    this.past.push(entry);
+    return { state: mergeChanges(state, entry.changes, 'after'), label: entry.label };
   }
 }

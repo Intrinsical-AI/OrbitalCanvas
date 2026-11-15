@@ -13,7 +13,11 @@ export async function harness() {
   try {
     dev = await createServer({ root: repo, server: { host: '127.0.0.1', port: 0, open: false } });
     await dev.listen();
-    built = await preview({ root: repo, preview: { host: '127.0.0.1', port: 0, open: false } });
+    built = await preview({
+      root: repo,
+      base: '/acceptance/subpath/',
+      preview: { host: '127.0.0.1', port: 0, open: false },
+    });
     const browserType = { chromium, firefox, webkit }[process.env.ORBITAL_BROWSER ?? 'chromium'];
     if (!browserType) throw new Error('Unknown ORBITAL_BROWSER');
     browser = await browserType.launch({ timeout: 90000 });
@@ -80,7 +84,7 @@ export async function harness() {
               body: (await response.text()) + '\nglobalThis.smokeApp=app;\n',
             });
           });
-        await page.goto(source ? origin(dev) : origin(built));
+        await page.goto(source ? origin(dev) : origin(built) + '/acceptance/subpath/');
         if (source) await page.waitForFunction(() => Boolean(window.smokeApp));
         await expect(page.locator('#playButton')).toHaveAttribute('aria-label', /animation/);
         await page.evaluate(() => document.fonts.ready);

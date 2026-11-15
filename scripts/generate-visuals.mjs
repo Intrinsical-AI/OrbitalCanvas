@@ -12,7 +12,9 @@ try {
       const doc = defaultDocument();
       Object.assign(doc.parameters, presetValues(p));
       doc.camera.autoOrbit = false;
-      const scene = new CaptureScene(doc, { width: 320, height: 320 });
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 320;
+      const scene = new CaptureScene(doc, canvas);
       for (let i = 0; i < 120; i++) scene.render(1 / 60);
       return { id: p.id, image: scene.canvas.toDataURL('image/png').split(',')[1] };
     });
@@ -35,11 +37,6 @@ try {
   });
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: 'resources/interface.png' });
-  await page.evaluate(() => {
-    window.smokeApp.document.appearance = 'light';
-    window.smokeApp.apply();
-  });
-  await page.screenshot({ path: 'resources/interface_2.png' });
   await context.close();
   const mobile = await h.page({ viewport: { width: 390, height: 844 }, hasTouch: true });
   await mobile.page.evaluate(() => {

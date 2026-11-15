@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 export default defineConfig({
   base: './',
+  worker: { format: 'es' },
   plugins: [
     {
       name: 'third-party-notices',
