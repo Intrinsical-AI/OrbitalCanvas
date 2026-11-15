@@ -221,9 +221,9 @@ export class App {
     const entry = redo ? this.editor.redo() : this.editor.undo();
     if (entry) {
       this.apply();
-      this.persist();
       this.status((redo ? 'Redid ' : 'Undid ') + entry.label);
     } else this.status(redo ? 'Nothing to redo' : 'Nothing to undo');
+    if (this.dirty) this.persist();
     this.paintHistory();
   }
   hideShareLink() {

@@ -20,7 +20,9 @@ export async function harness() {
     });
     const browserType = { chromium, firefox, webkit }[process.env.ORBITAL_BROWSER ?? 'chromium'];
     if (!browserType) throw new Error('Unknown ORBITAL_BROWSER');
+    process.stdout.write('Browser harness: launching ' + browserType.name() + '\n');
     browser = await browserType.launch({ timeout: 90000 });
+    process.stdout.write('Browser harness: browser ready\n');
     const origin = (server) => 'http://127.0.0.1:' + server.httpServer.address().port;
     const receipts = [];
     return {
@@ -91,7 +93,9 @@ export async function harness() {
         return { page, context, errors };
       },
       async close() {
+        process.stdout.write('Browser harness: closing browser\n');
         await browser.close();
+        process.stdout.write('Browser harness: closing servers\n');
         await dev.close();
         await new Promise((resolve) => built.httpServer.close(resolve));
         await writeFile(path.join(artifacts, 'summary.json'), JSON.stringify(receipts, null, 2));
@@ -99,6 +103,7 @@ export async function harness() {
       },
     };
   } catch (error) {
+    process.stderr.write('Browser harness setup failed: ' + error.message + '\n');
     await browser?.close();
     await dev?.close();
     if (built) await new Promise((resolve) => built.httpServer.close(resolve));

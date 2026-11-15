@@ -95,3 +95,18 @@ it('announces failed persistence once, then retries the unsaved document', () =>
   expect(storage.setItem).toHaveBeenCalledTimes(2);
   expect(app.status).toHaveBeenCalledOnce();
 });
+
+it('persists a pending edit when Redo commits it and discards the old future', () => {
+  const { app, storage } = setup();
+  app.changeParameter('size', 4, true);
+  app.undo();
+  storage.setItem.mockClear();
+  app.changeParameter('size', 5);
+  app.undo(true);
+  expect(app.document.parameters.size).toBe(5);
+  expect(app.history.pending).toBeNull();
+  expect(app.history.future).toHaveLength(0);
+  expect(storage.setItem).toHaveBeenCalledOnce();
+  expect(JSON.parse(storage.setItem.mock.calls[0][1]).parameters.size).toBe(5);
+  expect(app.dirty).toBe(false);
+});

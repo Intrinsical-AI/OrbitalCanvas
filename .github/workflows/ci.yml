@@ -56,8 +56,8 @@ jobs:
           path: dist/
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
       - run: npx playwright install --with-deps ${{ matrix.browser }}
-      - run: npm run smoke
-      - run: npm run visuals
+      - run: timeout --kill-after=10s 240s npm run smoke
+      - run: timeout --kill-after=10s 120s npm run visuals
         if: matrix.browser == 'chromium'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: matrix.browser == 'chromium' && success()
