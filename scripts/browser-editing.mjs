@@ -2,6 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from './browser-helpers.mjs';
 
+function assertPose(actual, expected, message) {
+  for (const key of ['yaw', 'pitch', 'zoom'])
+    assert.ok(Math.abs(actual[key] - expected[key]) < 1e-10, `${message}: ${key}`);
+}
+
 export function editingCases(get) {
   test('button focus preserves character shortcuts and native Space activation', async () => {
     const { page, context, errors } = await get().page();
@@ -202,6 +207,252 @@ export function editingCases(get) {
       await page.waitForFunction(() => Boolean(window.smokeApp));
       assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.speed), speed);
       assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light');
+    } finally {
+      await context.close();
+    }
+  });
+  test('disabling auto-orbit keeps the live camera pose after ten seconds', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      const before = await page.evaluate(() => {
+        const app = window.smokeApp;
+        app.stop();
+        for (let i = 0; i < 100; i++) app.advance(0.1);
+        return app.camera.pose(true);
+      });
+      await page.locator('#panelToggle').click();
+      await page.locator('#sceneSettings').evaluate((element) => (element.open = true));
+      await page.locator('#autoOrbitInput').uncheck();
+      const after = await page.evaluate(() => window.smokeApp.camera.pose(false));
+      assertPose(after, before, 'disabling auto-orbit must preserve the live pose');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.camera.autoOrbit), false);
+      await page.keyboard.press('Control+z');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.camera.autoOrbit), true);
+      assertPose(
+        await page.evaluate(() => window.smokeApp.camera.pose(true)),
+        before,
+        'undoing camera motion must preserve the live pose'
+      );
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  });
+  test('manual camera undo restores its gesture start; parameter undo preserves later motion', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      const before = await page.evaluate(() => {
+        const app = window.smokeApp;
+        app.stop();
+        for (let i = 0; i < 100; i++) app.advance(0.1);
+        const { x, y, width, height } = app.viewport.frame;
+        return {
+          pose: app.camera.pose(true),
+          x: x + width / 2,
+          y: y + height / 2,
+        };
+      });
+      await page.mouse.move(before.x, before.y);
+      await page.mouse.down();
+      await page.mouse.move(before.x + 70, before.y + 35, { steps: 3 });
+      await page.mouse.up();
+      const dragged = await page.evaluate(() => window.smokeApp.camera.pose(true));
+      assert.ok(Math.abs(dragged.yaw - before.pose.yaw) > 0.1, 'drag must orbit the camera');
+      await page.evaluate(() => {
+        for (let i = 0; i < 50; i++) window.smokeApp.advance(0.1);
+      });
+      await page.locator('#canvas').focus();
+      await page.keyboard.press('Control+z');
+      assertPose(
+        await page.evaluate(() => window.smokeApp.camera.pose(true)),
+        before.pose,
+        'camera undo must restore the gesture start after automatic motion'
+      );
+      await page.locator('#panelToggle').click();
+      await page.locator('#numPointsControl').focus();
+      await page.keyboard.press('ArrowRight');
+      const later = await page.evaluate(() => {
+        for (let i = 0; i < 100; i++) window.smokeApp.advance(0.1);
+        return window.smokeApp.camera.pose(true);
+      });
+      await page.keyboard.press('Control+z');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 72);
+      assertPose(
+        await page.evaluate(() => window.smokeApp.camera.pose(true)),
+        later,
+        'parameter undo must preserve automatic motion since the edit'
+      );
+      await page.keyboard.press('Control+Shift+z');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 73);
+      assertPose(
+        await page.evaluate(() => window.smokeApp.camera.pose(true)),
+        later,
+        'parameter redo must preserve the current live pose'
+      );
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  });
+  test('numeric commits show their clamped value after Tab and Enter and recover from blank input', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      await page.evaluate(() => window.smokeApp.stop());
+      await page.locator('#panelToggle').click();
+      const numeric = page.getByRole('spinbutton', {
+        name: 'Particles per ring value',
+        exact: true,
+      });
+      for (const key of ['Tab', 'Enter']) {
+        await numeric.fill('72');
+        await numeric.press('Tab');
+        await numeric.fill('9999');
+        await numeric.press(key);
+        await expect(numeric).toHaveValue('128');
+        assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 128);
+        await numeric.fill('');
+        await numeric.press(key);
+        await expect(numeric).toHaveValue('128');
+        assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 128);
+      }
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  });
+  test('redo during a held slider key commits the new edit and discards the old future', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      await page.evaluate(() => window.smokeApp.stop());
+      await page.locator('#panelToggle').click();
+      await page.locator('#numPointsControl').focus();
+      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('Control+z');
+      await page.keyboard.down('ArrowRight');
+      await page.keyboard.down('ArrowRight');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 74);
+      await page.keyboard.press('Control+Shift+z');
+      assert.deepEqual(
+        await page.evaluate(() => ({
+          value: window.smokeApp.document.parameters.numPoints,
+          pending: window.smokeApp.history.pending,
+          future: window.smokeApp.history.future.length,
+          past: window.smokeApp.history.past.length,
+        })),
+        { value: 74, pending: null, future: 0, past: 1 }
+      );
+      await page.keyboard.up('ArrowRight');
+      await page.keyboard.press('Control+z');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 72);
+      await page.keyboard.press('Control+Shift+z');
+      assert.equal(await page.evaluate(() => window.smokeApp.document.parameters.numPoints), 74);
+      assert.deepEqual(errors, []);
+    } finally {
+      await page.keyboard.up('ArrowRight');
+      await context.close();
+    }
+  });
+  test('a preset restores its generative lifecycle from a static composition', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      await page.evaluate(() => window.smokeApp.stop());
+      await page.locator('#panelToggle').click();
+      await page.locator('#sceneSettings').evaluate((element) => (element.open = true));
+      await page.locator('#spawnSelect').selectOption('static');
+      await page.locator('#presetsButton').click();
+      await page.locator('[data-preset="weave"]').click();
+      await expect(page.locator('#presetName')).toHaveText('Weave');
+      await expect(page.locator('#spawnSelect')).toHaveValue('generative');
+      assert.equal(await page.evaluate(() => window.smokeApp.scene.config.spawnMode), 'generative');
+      await page.keyboard.press('Control+z');
+      assert.equal(
+        await page.evaluate(() => window.smokeApp.document.parameters.spawnMode),
+        'static'
+      );
+      assert.equal(await page.evaluate(() => window.smokeApp.scene.config.spawnMode), 'static');
+      await page.keyboard.press('Control+Shift+z');
+      await expect(page.locator('#presetName')).toHaveText('Weave');
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  });
+  test('reduced motion respects explicit link and saved camera motion while starting paused', async () => {
+    const { page, context, errors } = await get().page({ reducedMotion: 'reduce' });
+    try {
+      const link = await page.evaluate(async () => {
+        const { DOCUMENT_KEY, defaultDocument, encodeDocument } =
+          await import('/src/ui/permalink.js');
+        const document = defaultDocument('light');
+        document.camera = { yaw: 1, pitch: 0.3, zoom: 1.4, autoOrbit: true };
+        localStorage.setItem(DOCUMENT_KEY, JSON.stringify(document));
+        const url = new URL(location.href);
+        url.hash = encodeDocument(document);
+        return url.href;
+      });
+      await page.reload();
+      await page.waitForFunction(() => Boolean(window.smokeApp));
+      for (const source of ['storage', 'link']) {
+        if (source === 'link') {
+          await page.evaluate(async () => {
+            const { DOCUMENT_KEY } = await import('/src/ui/permalink.js');
+            const document = JSON.parse(localStorage.getItem(DOCUMENT_KEY));
+            document.camera.autoOrbit = false;
+            localStorage.setItem(DOCUMENT_KEY, JSON.stringify(document));
+          });
+          await page.goto(link);
+          await page.waitForFunction(() => Boolean(window.smokeApp));
+        }
+        const restored = await page.evaluate(() => ({
+          running: window.smokeApp.running,
+          camera: window.smokeApp.document.camera,
+        }));
+        assert.equal(restored.running, false, `${source} must start paused`);
+        assert.equal(
+          restored.camera.autoOrbit,
+          true,
+          `${source} must preserve explicit camera motion`
+        );
+        assertPose(restored.camera, { yaw: 1, pitch: 0.3, zoom: 1.4 }, `${source} pose`);
+        await expect(page.locator('#playButton')).toHaveText('Play');
+      }
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  });
+  test('Share fallback stays selectable inside Capture and is hidden after an edit', async () => {
+    const { page, context, errors } = await get().page();
+    try {
+      await page.evaluate(() => {
+        window.smokeApp.stop();
+        Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
+        Object.defineProperty(navigator, 'clipboard', {
+          value: { writeText: async () => Promise.reject(new Error('Clipboard denied')) },
+          configurable: true,
+        });
+      });
+      await page.locator('#captureButton').click();
+      await page.locator('#captureDialog [data-action="share"]').click();
+      const field = page.locator('#captureDialog #shareLink');
+      await expect(field).toBeVisible();
+      await expect(field).toBeFocused();
+      const selection = await field.evaluate((input) => ({
+        start: input.selectionStart,
+        end: input.selectionEnd,
+        length: input.value.length,
+        hash: new URL(input.value).hash,
+      }));
+      assert.equal(selection.start, 0);
+      assert.equal(selection.end, selection.length);
+      assert.match(selection.hash, /^#v=2&/);
+      await page.locator('#captureClose').click();
+      await page.locator('#panelToggle').click();
+      await page.locator('#numPointsControl').focus();
+      await page.keyboard.press('ArrowRight');
+      assert.equal(await page.locator('#shareLink').evaluate((input) => input.hidden), true);
+      assert.equal(new URL(page.url()).hash, '');
+      assert.deepEqual(errors, []);
     } finally {
       await context.close();
     }

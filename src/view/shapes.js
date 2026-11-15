@@ -34,14 +34,14 @@ export const ICOSAHEDRON_VERTICES = Object.freeze(
 
 /**
  * @typedef {object} ShapeContext
- * @property {number} sx Screen x.
- * @property {number} sy Screen y.
- * @property {number} radius Particle radius in screen pixels, perspective already applied.
+ * @property {number} sx Logical x.
+ * @property {number} sy Logical y.
+ * @property {number} radius Particle radius in logical units, perspective already applied.
  * @property {number} time Simulated seconds, for shapes that animate.
+ * @property {number} pixelScale CSS pixels per logical unit, for level of detail.
  *
  * @typedef {object} Shape
  * @property {string} id
- * @property {string} label
  * @property {(ctx: CanvasRenderingContext2D, s: ShapeContext) => void} trace Append the
  *   particle's subpaths to the current path. The renderer owns `beginPath` and `fill`, so
  *   particles sharing an opacity are filled in one call.
@@ -64,7 +64,6 @@ function traceDisc(ctx, x, y, radius) {
 /** @type {Shape} */
 export const disc = {
   id: 'disc',
-  label: 'Disc',
   trace(ctx, { sx, sy, radius }) {
     traceDisc(ctx, sx, sy, radius);
   },
@@ -103,10 +102,9 @@ function tumble(time) {
  */
 export const icosahedron = {
   id: 'icosahedron',
-  label: 'Icosahedron',
-  trace(ctx, { sx, sy, radius, time }) {
+  trace(ctx, { sx, sy, radius, time, pixelScale }) {
     const clusterRadius = radius * 1.8;
-    if (clusterRadius < CLUSTER_LOD_RADIUS) {
+    if (clusterRadius * pixelScale < CLUSTER_LOD_RADIUS) {
       traceDisc(ctx, sx, sy, clusterRadius);
       return;
     }

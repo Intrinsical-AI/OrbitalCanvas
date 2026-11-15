@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 export default defineConfig({
   base: './',
+  worker: { format: 'es' },
   plugins: [
     {
       name: 'third-party-notices',
@@ -42,5 +43,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.js'],
+    maxWorkers: 1,
+    fileParallelism: false,
   },
 });

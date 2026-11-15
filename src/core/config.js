@@ -66,14 +66,14 @@ export const DEFAULTS = Object.freeze({
   /** Particle shape id, resolved through `view/shapes.js`. */
   shape: 'icosahedron',
   /**
-   * Particle radius, CSS pixels before perspective scaling.
+   * Particle radius in the artwork's 720-unit logical space, before perspective scaling.
    *
    * The icosahedron shape draws a cluster at 1.8x this radius. At 3 the clusters read as
    * discrete beads, which keeps the ring structure legible without colour; around 5 they
    * overlap into a continuous tube.
    */
   size: 3,
-  /** Chord stroke width, CSS pixels. */
+  /** Chord stroke width in the artwork's 720-unit logical space. */
   lineWidth: 1,
   /**
    * Chord layer opacity.
@@ -431,7 +431,7 @@ export const PRESETS = Object.freeze([
 ]);
 
 /**
- * The complete control state a preset produces: every control at its default, then the
+ * The complete scene state a preset produces: every parameter at its default, then the
  * preset's own values. Applying a preset therefore gives the same result whatever was set
  * before. Camera pose and motion live outside the scene parameters.
  *
@@ -439,11 +439,7 @@ export const PRESETS = Object.freeze([
  * @returns {Record<string, unknown>} Internal units.
  */
 export function presetValues(preset) {
-  const values = {};
-  for (const spec of CONTROLS) {
-    values[spec.key] = DEFAULTS[spec.key];
-  }
-  return Object.assign(values, preset.values);
+  return { ...DEFAULTS, ...preset.values };
 }
 
 /**

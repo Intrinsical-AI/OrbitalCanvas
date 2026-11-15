@@ -46,11 +46,20 @@ export class Viewport {
    */
   sync() {
     const rect = this.canvas.getBoundingClientRect();
+    const rawDpr = window.devicePixelRatio || 1;
     const dpr = currentDpr();
     const cssWidth = Math.max(1, Math.round(rect.width));
     const cssHeight = Math.max(1, Math.round(rect.height));
     const pixelWidth = Math.round(cssWidth * dpr);
     const pixelHeight = Math.round(cssHeight * dpr);
+
+    // A raw density change still needs a new query when the backing density stays capped.
+    if (this.rawDpr !== rawDpr) {
+      this.dprQuery?.removeEventListener('change', this.onDprChange);
+      this.rawDpr = rawDpr;
+      this.dprQuery = window.matchMedia(`(resolution: ${rawDpr}dppx)`);
+      this.dprQuery.addEventListener('change', this.onDprChange);
+    }
 
     if (
       this.canvas.width === pixelWidth &&
@@ -71,11 +80,6 @@ export class Viewport {
     // Resizing the backing store resets all context state, so the transform must be
     // reapplied here rather than once at startup.
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // Re-arm after any detected change, including a sync triggered by the frame loop.
-    this.dprQuery?.removeEventListener('change', this.onDprChange);
-    // Watch the raw ratio: a capped value would describe a resolution the screen is not at.
-    this.dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
-    this.dprQuery.addEventListener('change', this.onDprChange);
     this.onResize?.();
     return true;
   }

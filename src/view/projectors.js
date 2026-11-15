@@ -6,16 +6,16 @@
  * on the view mode and the two views can never disagree about where a particle is.
  *
  * @typedef {object} Projected
- * @property {number} sx Screen x, CSS pixels.
- * @property {number} sy Screen y, CSS pixels.
+ * @property {number} sx X in the configured viewport's units.
+ * @property {number} sy Y in the configured viewport's units.
  * @property {number} scale Size multiplier. Always 1 in the 2D view.
- * @property {number} depth Camera-space z, for sorting. Always 0 in the 2D view.
+ * @property {number} depth Camera-space z, for depth cues. Always 0 in the 2D view.
  * @property {boolean} visible False when the point is behind the near plane.
  *
  * @typedef {object} Projector
  * @property {string} id
- * @property {boolean} sortsByDepth
- * @property {(viewport: {width: number, height: number}, fitRadius: number) => void} configure
+ * @property {boolean} usesDepthCue
+ * @property {(viewport: {width: number, height: number}) => void} configure
  * @property {(p: import('../core/geometry/euclidean.js').Vec3, out: Projected) => Projected} project
  */
 
@@ -23,16 +23,14 @@
 const FIT_MARGIN = 1.12;
 
 /**
- * Centre the origin in the viewport and set the uniform world-to-screen scale that fits a
- * sphere of `fitRadius` into it.
+ * Centre the origin in the viewport and fit the scene's unit sphere into it.
  *
  * @param {{scale: number, cx: number, cy: number}} projector
- * @param {{width: number, height: number}} viewport CSS pixels.
- * @param {number} fitRadius World units.
+ * @param {{width: number, height: number}} viewport
  */
-function fitToViewport(projector, viewport, fitRadius) {
+function fitToViewport(projector, viewport) {
   const shortest = Math.min(viewport.width, viewport.height);
-  projector.scale = shortest / (2 * Math.max(fitRadius, 1) * FIT_MARGIN);
+  projector.scale = shortest / (2 * FIT_MARGIN);
   projector.cx = viewport.width / 2;
   projector.cy = viewport.height / 2;
 }
@@ -58,14 +56,14 @@ export function createProjected() {
 export class TopOrthoProjector {
   constructor() {
     this.id = '2d';
-    this.sortsByDepth = false;
+    this.usesDepthCue = false;
     this.scale = 1;
     this.cx = 0;
     this.cy = 0;
   }
 
-  configure(viewport, fitRadius) {
-    fitToViewport(this, viewport, fitRadius);
+  configure(viewport) {
+    fitToViewport(this, viewport);
   }
 
   project(p, out) {
@@ -90,7 +88,7 @@ export class PerspectiveProjector {
    */
   constructor(camera) {
     this.id = '3d';
-    this.sortsByDepth = true;
+    this.usesDepthCue = true;
     this.camera = camera;
     this.scale = 1;
     this.cx = 0;
@@ -101,8 +99,8 @@ export class PerspectiveProjector {
     this.cameraPoint = { x: 0, y: 0, z: 0 };
   }
 
-  configure(viewport, fitRadius) {
-    fitToViewport(this, viewport, fitRadius);
+  configure(viewport) {
+    fitToViewport(this, viewport);
   }
 
   project(p, out) {

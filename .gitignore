@@ -33,4 +33,3 @@ pnpm-debug.log*
 # Local recordings exported from the app
 *.mp4
 *.webm
-!resources/demo.mp4

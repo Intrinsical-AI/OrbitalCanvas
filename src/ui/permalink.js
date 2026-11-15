@@ -9,7 +9,12 @@ import {
 
 export const DOCUMENT_KEY = 'orbital-canvas:document:v2';
 export const PREFERENCES_KEY = 'orbital-canvas:preferences:v2';
-export const CAPTURE_DEFAULTS = Object.freeze({ resolution: 'screen', duration: 6, fps: 30 });
+export const CAPTURE_DEFAULTS = Object.freeze({
+  format: 'share',
+  resolution: 'screen',
+  duration: 6,
+  fps: 30,
+});
 
 export function defaultDocument(appearance = 'dark') {
   return {
@@ -61,7 +66,12 @@ export function validateDocument(input) {
       doc.parameters[spec.key] = value.toLowerCase();
     }
   }
-  const camera = { ...CAMERA_DEFAULTS, ...input.camera };
+  const camera = Object.fromEntries(
+    Object.entries(CAMERA_DEFAULTS).map(([key, fallback]) => [
+      key,
+      input.camera?.[key] === undefined ? fallback : input.camera[key],
+    ])
+  );
   for (const key of ['yaw', 'pitch', 'zoom']) {
     if (typeof camera[key] !== 'number' || !Number.isFinite(camera[key]))
       throw new Error('Invalid camera.');
@@ -136,18 +146,19 @@ export function decodeDocument(text) {
 export function initialDocument(location, storage, appearance) {
   if (location.hash) {
     try {
-      return { document: decodeDocument(location.hash), error: '' };
+      return { document: decodeDocument(location.hash), error: '', source: 'link' };
     } catch (error) {
-      return { document: defaultDocument(appearance), error: error.message };
+      return { document: defaultDocument(appearance), error: error.message, source: 'defaults' };
     }
   }
   try {
     const stored = storage.getItem(DOCUMENT_KEY);
-    if (stored) return { document: validateDocument(JSON.parse(stored)), error: '' };
+    if (stored)
+      return { document: validateDocument(JSON.parse(stored)), error: '', source: 'storage' };
   } catch {
     /* An unavailable or invalid stored document uses fresh defaults. */
   }
-  return { document: defaultDocument(appearance), error: '' };
+  return { document: defaultDocument(appearance), error: '', source: 'defaults' };
 }
 
 export function storeDocument(document, storage) {
@@ -174,6 +185,9 @@ export function readPreferences(storage) {
     diagnostics: saved.diagnostics === true,
     groups: saved.groups && typeof saved.groups === 'object' ? saved.groups : {},
     capture: {
+      format: ['share', 'auto'].includes(saved.capture?.format)
+        ? saved.capture.format
+        : CAPTURE_DEFAULTS.format,
       resolution: ['screen', 'landscape', 'square', 'portrait'].includes(saved.capture?.resolution)
         ? saved.capture.resolution
         : 'screen',

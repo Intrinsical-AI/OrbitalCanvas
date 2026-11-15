@@ -75,6 +75,7 @@ describe('document v2', () => {
     const result = initialDocument({ hash: '#v=1' }, memory(JSON.stringify(saved)), 'light');
     expect(result.document.parameters.numPoints).not.toBe(12);
     expect(result.error).toMatch(/version/);
+    expect(result.source).toBe('defaults');
   });
   it('valid link beats local, local beats system defaults', () => {
     const saved = defaultDocument('light');
@@ -86,6 +87,13 @@ describe('document v2', () => {
       initialDocument({ hash: '#v=2&numPoints=24' }, memory(JSON.stringify(saved)), 'dark').document
         .parameters.numPoints
     ).toBe(24);
+  });
+  it('identifies whether startup restored a link, storage or fresh defaults', () => {
+    const saved = JSON.stringify(defaultDocument());
+    expect(initialDocument({ hash: '#v=2' }, memory(saved), 'light').source).toBe('link');
+    expect(initialDocument({ hash: '' }, memory(saved), 'light').source).toBe('storage');
+    expect(initialDocument({ hash: '' }, memory(), 'light').source).toBe('defaults');
+    expect(initialDocument({ hash: '' }, memory('broken'), 'light').source).toBe('defaults');
   });
   it('persists synchronously in the new storage key', () => {
     let written;
@@ -148,14 +156,24 @@ describe('document v2', () => {
     const doc = defaultDocument();
     doc.parameters.initialRadius = 800;
     doc.time = 500;
+    doc.camera.legacy = 3;
     const clean = validateDocument(doc);
     expect(clean).not.toHaveProperty('time');
     expect(clean.parameters).not.toHaveProperty('initialRadius');
+    expect(clean.camera).toEqual(defaultDocument().camera);
+    expect(JSON.parse(JSON.stringify(clean)).camera).not.toHaveProperty('legacy');
+  });
+  it.each(['yaw', 'pitch', 'zoom', 'autoOrbit'])('rejects null camera %s', (key) => {
+    const doc = defaultDocument();
+    doc.camera[key] = null;
+    expect(() => validateDocument(doc)).toThrow(/camera/);
   });
   it('validates editor preferences independently', () => {
     expect(readPreferences(memory('null')).capture.fps).toBe(30);
     expect(
       readPreferences(memory('{"shortcuts":false,"capture":{"fps":999,"duration":999}}')).capture
-    ).toEqual({ resolution: 'screen', fps: 30, duration: 120 });
+    ).toEqual({ format: 'share', resolution: 'screen', fps: 30, duration: 120 });
+    expect(readPreferences(memory('{"capture":{"format":"auto"}}')).capture.format).toBe('auto');
+    expect(readPreferences(memory('{"capture":{"format":"av1"}}')).capture.format).toBe('share');
   });
 });

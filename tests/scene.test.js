@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CONTROLS, rangeBounds } from '../src/core/config.js';
-import { PARTICLE_BUDGET, Scene } from '../src/core/scene.js';
+import { PARTICLE_BUDGET, Scene, stepScene } from '../src/core/scene.js';
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -63,7 +63,7 @@ describe('Scene.step — phase-based time', () => {
     const after = positions(scene);
 
     for (let i = 0; i < before.length; i++) {
-      // One frame at 3 rad/s on a 380-unit ring moves ~19 units. A rescale of 30 s of
+      // One frame at 3 rad/s on a unit ring moves ~0.05 units. A rescale of 30 s of
       // absolute time would move the particle across the whole ring instead.
       expect(distance(after[i], before[i])).toBeLessThan(0.06);
     }
@@ -142,6 +142,23 @@ describe('Scene.setMany', () => {
     expect(scene.time).toBe(time);
   });
 
+  it('does no trigonometric work for unchanged or cosmetic parameters', () => {
+    const scene = new Scene({ spawnMode: 'static', ringCount: 3 });
+    const cos = vi.spyOn(Math, 'cos');
+    const sin = vi.spyOn(Math, 'sin');
+    try {
+      scene.setMany([['ringCount', 3]]);
+      scene.setMany([
+        ['color', '#00ff00'],
+        ['lineWidth', 4],
+      ]);
+      expect(cos).not.toHaveBeenCalled();
+      expect(sin).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it('restarts from the current configuration without restoring defaults', () => {
     const scene = new Scene({
       spawnMode: 'static',
@@ -197,6 +214,71 @@ describe('Scene.setMany', () => {
     expect(scene.rings[1].tilt).toBe((scene.rings[1].orientationSlot * Math.PI) / 2);
     expect(scene.rings[1].yaw).toBe((scene.rings[1].orientationSlot * Math.PI) / 2);
     expect(positions(scene)).not.toEqual(before);
+  });
+});
+
+describe('stepScene', () => {
+  it.each([
+    [1, 10],
+    [5, 50],
+    [120, 1200],
+  ])('uses exactly %i seconds of bounded steps without a residual step', (dt, count) => {
+    const intervals = [];
+    stepScene({ step: (step) => intervals.push(step) }, dt, 'experimental');
+    expect(intervals).toHaveLength(count);
+    // Summing 1,200 binary floating-point tenths accumulates a few picoseconds of error.
+    expect(intervals.reduce((sum, interval) => sum + interval, 0)).toBeCloseTo(dt, 10);
+    for (const interval of intervals) expect(interval).toBeLessThanOrEqual(0.1);
+  });
+
+  it.each([120.0001, 1e16])('rejects excessive finite intervals before stepping: %s', (dt) => {
+    const scene = { step: vi.fn(), enforceBudget: vi.fn() };
+    expect(() => stepScene(scene, dt, 'safe')).toThrow(
+      new RangeError('Simulation interval cannot exceed 120 seconds.')
+    );
+    expect(scene.step).not.toHaveBeenCalled();
+    expect(scene.enforceBudget).not.toHaveBeenCalled();
+  });
+
+  it('advances the full interval using simulation steps no larger than 0.1 seconds', () => {
+    const scene = new Scene({ spawnMode: 'static', ringCount: 1, speed: 2 });
+    const step = vi.spyOn(scene, 'step');
+    stepScene(scene, 1.25, 'experimental');
+    expect(scene.time).toBeCloseTo(1.25, 12);
+    expect(scene.rings[0].phase).toBeCloseTo(2.5, 12);
+    expect(step.mock.calls.length).toBeGreaterThan(1);
+    for (const [dt] of step.mock.calls) {
+      expect(dt).toBeGreaterThan(0);
+      expect(dt).toBeLessThanOrEqual(0.1);
+    }
+  });
+
+  it.each([0, -1, NaN, Infinity])(
+    'enforces Safe limits without advancing an invalid or zero interval %s',
+    (dt) => {
+      const scene = new Scene({ spawnMode: 'static', ringCount: 48, numPoints: 240 });
+      stepScene(scene, dt, 'safe');
+      expect(scene.time).toBe(0);
+      expect(scene.particleCount).toBeLessThanOrEqual(PARTICLE_BUDGET);
+    }
+  );
+
+  it('enforces Safe limits throughout a longer interval without dropping elapsed time', () => {
+    const scene = new Scene({ numPoints: 128, maxRings: 25, circleInterval: 0.2 });
+    const enforce = vi.spyOn(scene, 'enforceBudget');
+    stepScene(scene, 5, 'safe');
+    expect(scene.time).toBeCloseTo(5, 12);
+    expect(scene.particleCount).toBeLessThanOrEqual(PARTICLE_BUDGET);
+    expect(enforce.mock.calls.length).toBeGreaterThanOrEqual(50);
+    expect(scene.rings.map((ring) => ring.seq)).toEqual(
+      Array.from({ length: scene.rings.length }, (_, index) => scene.rings[0].seq + index)
+    );
+  });
+
+  it('preserves the wider Experimental population', () => {
+    const scene = new Scene({ spawnMode: 'static', ringCount: 48, numPoints: 240 });
+    stepScene(scene, 0, 'experimental');
+    expect(scene.particleCount).toBe(48 * 240);
   });
 });
 

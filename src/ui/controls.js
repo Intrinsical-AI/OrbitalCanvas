@@ -166,11 +166,12 @@ export class Controls {
     }
   }
   numeric(spec, input) {
-    if (!input.value.trim() || !Number.isFinite(Number(input.value))) {
-      this.sync(this.document);
-      return;
-    }
-    this.callbacks.change(spec.key, toInternal(spec, input.value, this.mode), true);
+    const value =
+      !input.value.trim() || !Number.isFinite(Number(input.value))
+        ? this.document.parameters[spec.key]
+        : toInternal(spec, input.value, this.mode);
+    input.value = String(toDisplay(spec, value, this.mode));
+    if (value !== this.document.parameters[spec.key]) this.callbacks.change(spec.key, value, true);
   }
   sync(doc) {
     this.document = doc;

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { euclidean } from '../src/core/geometry/euclidean.js';
+import { orbitPoint } from '../src/core/geometry/euclidean.js';
 import { createRing, syncRingTrig } from '../src/core/ring.js';
 
-function orbitPoint(ring, index, count) {
-  return euclidean.orbitPoint(ring, index, count, { x: 0, y: 0, z: 0 });
+function pointOnRing(ring, index, count) {
+  return orbitPoint(ring, index, count, { x: 0, y: 0, z: 0 });
 }
 
 /**
@@ -27,7 +27,7 @@ function reference(r, index, count) {
   };
 }
 
-describe('euclidean.orbitPoint', () => {
+describe('orbitPoint', () => {
   it('matches the closed-form rotation for arbitrary rings, phases and counts', () => {
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 10 - 5;
@@ -40,7 +40,7 @@ describe('euclidean.orbitPoint', () => {
           phase: rand() * 40,
         });
         for (let i = 0; i < count; i += Math.max(1, count >> 3)) {
-          const got = orbitPoint(r, i, count);
+          const got = pointOnRing(r, i, count);
           const want = reference(r, i, count);
           expect(got.x).toBeCloseTo(want.x, 9);
           expect(got.y).toBeCloseTo(want.y, 9);
@@ -55,7 +55,7 @@ describe('euclidean.orbitPoint', () => {
       for (const yaw of [0, 0.7, 2.2]) {
         const r = ring({ radius: 137, tilt, yaw });
         for (let i = 0; i < 12; i++) {
-          const { x, y, z } = orbitPoint(r, i, 12);
+          const { x, y, z } = pointOnRing(r, i, 12);
           expect(Math.hypot(x, y, z)).toBeCloseTo(137, 9);
         }
       }
@@ -65,7 +65,7 @@ describe('euclidean.orbitPoint', () => {
   it('keeps an untilted ring in the XY plane', () => {
     const r = ring({ tilt: 0, yaw: 0 });
     for (let i = 0; i < 16; i++) {
-      expect(orbitPoint(r, i, 16).z).toBeCloseTo(0, 12);
+      expect(pointOnRing(r, i, 16).z).toBeCloseTo(0, 12);
     }
   });
 
@@ -73,20 +73,20 @@ describe('euclidean.orbitPoint', () => {
     // rotateX(PI/2) sends the local +Y axis to +Z, so the circle loses its Y extent.
     const r = ring({ tilt: Math.PI / 2, yaw: 0 });
     for (let i = 0; i < 16; i++) {
-      expect(orbitPoint(r, i, 16).y).toBeCloseTo(0, 12);
+      expect(pointOnRing(r, i, 16).y).toBeCloseTo(0, 12);
     }
   });
 
   it('a tilted ring genuinely leaves the XY plane', () => {
     const r = ring({ tilt: 0.6, yaw: 0.2 });
-    const zs = Array.from({ length: 24 }, (_, i) => orbitPoint(r, i, 24).z);
+    const zs = Array.from({ length: 24 }, (_, i) => pointOnRing(r, i, 24).z);
     expect(Math.max(...zs.map(Math.abs))).toBeGreaterThan(1);
   });
 
   it('distributes particles evenly around the circle', () => {
     const r = ring({ tilt: 0, yaw: 0, radius: 10 });
-    const first = orbitPoint(r, 0, 4);
-    const quarter = orbitPoint(r, 1, 4);
+    const first = pointOnRing(r, 0, 4);
+    const quarter = pointOnRing(r, 1, 4);
     expect(first.x).toBeCloseTo(10, 9);
     expect(first.y).toBeCloseTo(0, 9);
     expect(quarter.x).toBeCloseTo(0, 9);
@@ -96,25 +96,25 @@ describe('euclidean.orbitPoint', () => {
   it('advances every particle by the ring phase', () => {
     const base = ring({ tilt: 0, yaw: 0, radius: 10, phase: 0 });
     const turned = ring({ tilt: 0, yaw: 0, radius: 10, phase: Math.PI / 2 });
-    const a = orbitPoint(base, 0, 4);
-    const b = orbitPoint(turned, 0, 4);
-    expect(b.x).toBeCloseTo(orbitPoint(base, 1, 4).x, 9);
-    expect(b.y).toBeCloseTo(orbitPoint(base, 1, 4).y, 9);
+    const a = pointOnRing(base, 0, 4);
+    const b = pointOnRing(turned, 0, 4);
+    expect(b.x).toBeCloseTo(pointOnRing(base, 1, 4).x, 9);
+    expect(b.y).toBeCloseTo(pointOnRing(base, 1, 4).y, 9);
     expect(a.x).not.toBeCloseTo(b.x, 3);
   });
 
   it('yaw is not a no-op once the ring is tilted', () => {
     const tilted = ring({ tilt: 0.8, yaw: 0 });
     const yawed = ring({ tilt: 0.8, yaw: 1.2 });
-    const a = orbitPoint(tilted, 3, 12);
-    const b = orbitPoint(yawed, 3, 12);
+    const a = pointOnRing(tilted, 3, 12);
+    const b = pointOnRing(yawed, 3, 12);
     expect(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)).toBeGreaterThan(1);
   });
 
   it('can write a point into a reusable output object', () => {
     const r = ring({ radius: 73, tilt: Math.PI / 2, yaw: Math.PI / 2, phase: 0 });
     const out = { x: 0, y: 0, z: 0 };
-    expect(euclidean.orbitPoint(r, 1, 4, out)).toBe(out);
+    expect(orbitPoint(r, 1, 4, out)).toBe(out);
     expect(out.x).toBeCloseTo(0, 10);
     expect(out.y).toBeCloseTo(0, 10);
     expect(out.z).toBeCloseTo(73, 10);

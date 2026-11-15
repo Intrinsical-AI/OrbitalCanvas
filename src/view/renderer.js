@@ -25,8 +25,8 @@ const GHOST_SWEEP_SECONDS = 0.5;
 const GHOST_NUDGE = 10 / 255;
 
 /**
- * @typedef {import('./projectors.js').Projected & {opacity: number, alpha: number}} Slot
- *   `opacity` is the ring's fade; `alpha` is the final particle alpha including the depth cue.
+ * @typedef {import('./projectors.js').Projected & {opacity: number}} Slot
+ *   `opacity` is the ring's fade.
  */
 
 /**
@@ -34,7 +34,7 @@ const GHOST_NUDGE = 10 / 255;
  *
  * Deliberately projection-agnostic: it asks a `Projector` where each particle lands and
  * never inspects the view mode. Everything that differs between 3D and 2D — perspective and
- * depth-modulated alpha — falls out of the projector's `sortsByDepth` flag and the
+ * depth-modulated alpha — falls out of the projector's `usesDepthCue` flag and the
  * `scale`/`depth` fields it returns.
  */
 export class Renderer {
@@ -58,7 +58,7 @@ export class Renderer {
     /** Chord endpoint pool indices per opacity level, as flat pairs. @type {number[][]} */
     this.chordBuckets = Array.from({ length: CHORD_LEVELS }, () => []);
     /** Reused shape argument; shape.trace() consumes it synchronously. */
-    this.shapeState = { sx: 0, sy: 0, radius: 0, time: 0 };
+    this.shapeState = { sx: 0, sy: 0, radius: 0, time: 0, pixelScale: 1 };
     this.sweepElapsed = 0;
   }
 
@@ -79,7 +79,8 @@ export class Renderer {
       height: this.viewport.height,
     };
     const scale = Math.min(frame.width, frame.height) / 720;
-    projector.configure({ width: frame.width / scale, height: frame.height / scale }, 1);
+    projector.configure({ width: frame.width / scale, height: frame.height / scale });
+    this.shapeState.pixelScale = scale;
     this.ctx.save();
     this.ctx.translate(frame.x, frame.y);
     this.ctx.scale(scale, scale);
@@ -127,7 +128,7 @@ export class Renderer {
    */
   #project(scene, projector) {
     for (const bucket of this.buckets) bucket.length = 0;
-    const depthCue = projector.sortsByDepth;
+    const depthCue = projector.usesDepthCue;
     const extent = 1;
     const { size } = scene.config;
 
@@ -135,7 +136,7 @@ export class Renderer {
     scene.forEachParticle((position, ring) => {
       let slot = this.pool[i];
       if (!slot) {
-        slot = { ...createProjected(), opacity: 1, alpha: 1 };
+        slot = { ...createProjected(), opacity: 1 };
         this.pool[i] = slot;
       }
       i += 1;
@@ -147,9 +148,8 @@ export class Renderer {
         const t = Math.min(1, Math.max(0, (slot.depth + extent) / (2 * extent)));
         alpha *= DEPTH_ALPHA_MIN + (DEPTH_ALPHA_MAX - DEPTH_ALPHA_MIN) * t;
       }
-      slot.alpha = alpha;
-
-      if (!slot.visible || alpha <= 0.01 || size * slot.scale <= 0.05) return;
+      if (!slot.visible || alpha <= 0.01 || size * slot.scale * this.shapeState.pixelScale <= 0.05)
+        return;
       // Level k holds alphas in (k / L, (k + 1) / L] and is filled at its upper edge, so a
       // fully opaque particle is drawn at exactly 1.
       const level = Math.min(ALPHA_LEVELS - 1, Math.ceil(alpha * ALPHA_LEVELS) - 1);

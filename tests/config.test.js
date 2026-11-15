@@ -122,10 +122,19 @@ describe('presets', () => {
     expect(fromDefaults.lineWidth).toBe(DEFAULTS.lineWidth);
   });
 
-  it('cover every scene control while leaving the camera outside presets', () => {
+  it('cover every scene parameter while leaving the camera outside presets', () => {
     const keys = Object.keys(presetValues(PRESETS[0]));
-    expect(keys.sort()).toEqual(CONTROLS.map((spec) => spec.key).sort());
+    expect(keys.sort()).toEqual(Object.keys(DEFAULTS).sort());
     expect(presetValues(PRESETS.find((p) => p.id === 'default'))).not.toHaveProperty('autoOrbit');
+  });
+
+  it('restore the generative lifecycle after applying a preset to a static scene', () => {
+    const previous = { ...DEFAULTS, spawnMode: 'static', fadeDuration: 0 };
+    for (const preset of PRESETS) {
+      const next = { ...previous, ...presetValues(preset) };
+      expect(next.spawnMode).toBe('generative');
+      expect(next.fadeDuration).toBe(DEFAULTS.fadeDuration);
+    }
   });
 
   it('each produce a configuration distinct from the defaults', () => {
