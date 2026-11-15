@@ -115,3 +115,53 @@ it('live snapshots normalize the current pose without mutating the document or c
   live.parameters.size = 7;
   expect(editor.document.parameters.size).toBe(3);
 });
+
+it.each([0, 1e-12, -1e-12])(
+  'undo restores a camera edit after automatic motion returns near its earlier pose: %s',
+  (offset) => {
+    const document = defaultDocument();
+    document.camera.yaw = 0;
+    const editor = new EditorState(document);
+    editor.begin('orbit');
+    editor.camera.orbitBy(100, 0);
+    editor.authorCamera();
+    editor.commit();
+    editor.camera.update((2 * Math.PI - 0.5 + offset) / 0.12, true);
+    editor.action('size', (doc) => {
+      doc.parameters.size = 5;
+    });
+    expect(editor.document.camera.yaw).toBeCloseTo(offset, 10);
+    editor.camera.update(1, true);
+    const liveYaw = editor.camera.yaw;
+    editor.undo();
+    expect(editor.document.parameters.size).toBe(3);
+    expect(editor.camera.yaw).toBe(liveYaw);
+    const undone = editor.undo();
+    expect(undone.paths).toEqual([['camera', 'yaw']]);
+    expect(editor.camera.yaw).toBeCloseTo(0, 12);
+    expect(editor.camera.pitch).toBe(CAMERA_DEFAULTS.pitch);
+    expect(editor.camera.zoom).toBe(1);
+  }
+);
+
+it('redo applies its camera target even when a later no-op captured that same baseline', () => {
+  const document = defaultDocument();
+  document.camera.yaw = 0;
+  const editor = new EditorState(document);
+  editor.begin('orbit');
+  editor.camera.orbitBy(100, 0);
+  editor.authorCamera();
+  editor.commit();
+  editor.undo();
+  editor.camera.update(0.5 / 0.12, true);
+  editor.action('same projection', (doc) => {
+    doc.view = '3d';
+  });
+  expect(editor.document.camera.yaw).toBe(0.5);
+  editor.camera.update(1, true);
+  expect(editor.camera.yaw).toBeCloseTo(0.62, 12);
+  const redone = editor.redo();
+  expect(redone.paths).toEqual([['camera', 'yaw']]);
+  expect(editor.camera.yaw).toBe(0.5);
+  expect(editor.document.view).toBe('3d');
+});

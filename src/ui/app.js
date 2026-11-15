@@ -157,6 +157,7 @@ export class App {
     this.bind();
     this.sync();
     this.layout();
+    this.paintPlay();
     if (!this.reducedMotion) this.start();
     if (boot.error) this.status(boot.error);
   }

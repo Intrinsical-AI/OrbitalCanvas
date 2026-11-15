@@ -43,5 +43,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.js'],
+    maxWorkers: 1,
+    fileParallelism: false,
   },
 });

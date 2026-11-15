@@ -41,7 +41,7 @@ it('bounds history and drops no-op transactions', () => {
 it('cancel returns the initial state without retaining an operation', () => {
   const h = new History();
   h.begin({ x: 1 });
-  expect(h.cancel({ x: 2 })).toEqual({ state: { x: 1 }, label: 'edit' });
+  expect(h.cancel({ x: 2 })).toEqual({ state: { x: 1 }, label: 'edit', paths: [['x']] });
   expect(h.past).toHaveLength(0);
 });
 
@@ -58,6 +58,7 @@ it('undo and redo change only the edited document fields', () => {
   expect(undone).toEqual({
     state: { ...current, parameters: { size: 3, speed: 2 } },
     label: 'size',
+    paths: [['parameters', 'size']],
   });
   expect(h.redo(undone.state).state).toEqual(current);
   expect(current.parameters.size).toBe(5);
@@ -95,7 +96,35 @@ it('cancel preserves the redo stack and snapshots remain independent', () => {
   h.begin(before, 'drag');
   before.parameters.size = 99;
   const cancelled = h.cancel({ parameters: { size: 4 } });
-  expect(cancelled).toEqual({ state: { parameters: { size: 3 } }, label: 'drag' });
+  expect(cancelled).toEqual({
+    state: { parameters: { size: 3 } },
+    label: 'drag',
+    paths: [['parameters', 'size']],
+  });
   expect(h.redo(cancelled.state).state.parameters.size).toBe(5);
   expect(h.cancel(cancelled.state)).toBeNull();
+});
+
+it('exposes independent changed paths for undo, redo and cancellation', () => {
+  const h = new History();
+  const before = { camera: { yaw: 0, pitch: 0.2 }, parameters: { size: 3 } };
+  const after = { camera: { yaw: 0.5, pitch: 0.2 }, parameters: { size: 5 } };
+  h.begin(before, 'orbit and size');
+  h.commit(after);
+  const undone = h.undo(after);
+  expect(undone.paths).toEqual([
+    ['camera', 'yaw'],
+    ['parameters', 'size'],
+  ]);
+  undone.paths[0][1] = 'pitch';
+  const redone = h.redo(undone.state);
+  expect(redone.paths).toEqual([
+    ['camera', 'yaw'],
+    ['parameters', 'size'],
+  ]);
+  expect(redone.state).toEqual(after);
+  h.begin(after, 'pitch');
+  const cancelled = h.cancel({ ...after, camera: { ...after.camera, pitch: 0.4 } });
+  expect(cancelled.paths).toEqual([['camera', 'pitch']]);
+  expect(cancelled.state).toEqual(after);
 });

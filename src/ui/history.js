@@ -62,9 +62,11 @@ export class History {
     const entry = this.pending;
     this.pending = null;
     if (!entry) return null;
+    const changes = changesBetween(entry.state, state);
     return {
-      state: mergeChanges(state, changesBetween(entry.state, state), 'before'),
+      state: mergeChanges(state, changes, 'before'),
       label: entry.label,
+      paths: changes.map(({ path }) => [...path]),
     };
   }
   undo(state) {
@@ -72,13 +74,21 @@ export class History {
     const entry = this.past.pop();
     if (!entry) return null;
     this.future.push(entry);
-    return { state: mergeChanges(state, entry.changes, 'before'), label: entry.label };
+    return {
+      state: mergeChanges(state, entry.changes, 'before'),
+      label: entry.label,
+      paths: entry.changes.map(({ path }) => [...path]),
+    };
   }
   redo(state) {
     this.commit(state);
     const entry = this.future.pop();
     if (!entry) return null;
     this.past.push(entry);
-    return { state: mergeChanges(state, entry.changes, 'after'), label: entry.label };
+    return {
+      state: mergeChanges(state, entry.changes, 'after'),
+      label: entry.label,
+      paths: entry.changes.map(({ path }) => [...path]),
+    };
   }
 }

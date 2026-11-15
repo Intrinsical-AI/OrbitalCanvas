@@ -18,6 +18,10 @@ async function closeCapture(h, page, context) {
         recording: app?.capture?.recorder?.recording,
         fallback: app?.capture?.recorder?.fallback,
         specification: app?.capture?.spec,
+        workerJobId: app?.capture?.recorder?.workerTask?.job?.jobId,
+        workers: window.captureWorkers?.map((worker) => ({ ended: worker.ended })),
+        workerEvents: window.captureWorkerEvents?.slice(-10),
+        workerStates: window.captureWorkerStates?.slice(-10),
         error: field('captureError').textContent,
         progress: field('recordingIndicator').textContent,
         exportDisabled: field('exportButton').disabled,
@@ -56,6 +60,7 @@ async function setup(h, options = {}) {
       window.captureTracks = [];
       window.captureWorkers = [];
       window.captureWorkerEvents = [];
+      window.captureWorkerStates = [];
       const NativeWorker = window.Worker;
       if (fallback)
         Object.defineProperty(window, 'Worker', { value: undefined, configurable: true });
@@ -68,6 +73,10 @@ async function setup(h, options = {}) {
             window.captureWorkers.push(this);
             this.addEventListener('message', ({ data }) => {
               if (data.type === 'worker-probe') window.captureWorkerEvents.push(data);
+              if (data.type === 'phase' || data.type === 'progress') {
+                window.captureWorkerStates.push(data);
+                if (window.captureWorkerStates.length > 10) window.captureWorkerStates.shift();
+              }
             });
           }
           terminate() {
@@ -104,14 +113,29 @@ async function workerCapabilities(page) {
         { type: 'text/javascript' }
       )
     );
-    const worker = new Worker(url, { type: 'module' });
+    let worker, timer;
     try {
+      worker = new Worker(url, { type: 'module' });
       return await new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Worker capability probe timed out after 12 seconds.')),
+          12000
+        );
         worker.onmessage = ({ data }) => resolve(data);
-        worker.onerror = reject;
+        worker.onmessageerror = () =>
+          reject(new Error('Worker capability probe returned an unreadable message.'));
+        worker.onerror = (event) => {
+          event.preventDefault();
+          reject(
+            new Error(
+              'Worker capability probe failed: ' + (event.message || 'Unknown worker error.')
+            )
+          );
+        };
       });
     } finally {
-      worker.terminate();
+      clearTimeout(timer);
+      worker?.terminate();
       URL.revokeObjectURL(url);
     }
   });
@@ -415,17 +439,38 @@ export function captureCases(get) {
               postMessage(pixels.buffer, [pixels.buffer]);
             };`;
           const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-          const worker = new Worker(url, { type: 'module' });
+          let worker, timer;
           try {
+            worker = new Worker(url, { type: 'module' });
             const buffer = await new Promise((resolve, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(
+                    new Error('Worker frame-zero rendering probe timed out after 12 seconds.')
+                  ),
+                12000
+              );
               worker.onmessage = ({ data }) => resolve(data);
-              worker.onerror = reject;
+              worker.onmessageerror = () =>
+                reject(
+                  new Error('Worker frame-zero rendering probe returned an unreadable message.')
+                );
+              worker.onerror = (event) => {
+                event.preventDefault();
+                reject(
+                  new Error(
+                    'Worker frame-zero rendering probe failed: ' +
+                      (event.message || 'Unknown worker error.')
+                  )
+                );
+              };
               worker.postMessage(doc);
             });
             if (buffer)
               workerFrameZero = compareArrays(await pixels(zero), new Uint8ClampedArray(buffer));
           } finally {
-            worker.terminate();
+            clearTimeout(timer);
+            worker?.terminate();
             URL.revokeObjectURL(url);
           }
         }
@@ -544,16 +589,31 @@ export function captureCases(get) {
           if (typeof OffscreenCanvas !== 'function' || typeof VideoEncoder !== 'function' || typeof VideoFrame !== 'function') postMessage(null);
           else selectCodec(new OffscreenCanvas(${canvas.width}, ${canvas.height}), {fps:30,format:'share'}).then(codec => postMessage(codec)).catch(error => postMessage({error:error.message}));`;
         const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-        const worker = new Worker(url, { type: 'module' });
+        let worker, timer;
         try {
+          worker = new Worker(url, { type: 'module' });
           const result = await new Promise((resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('H.264 worker codec probe timed out after 12 seconds.')),
+              12000
+            );
             worker.onmessage = ({ data }) => resolve(data);
-            worker.onerror = reject;
+            worker.onmessageerror = () =>
+              reject(new Error('H.264 worker codec probe returned an unreadable message.'));
+            worker.onerror = (event) => {
+              event.preventDefault();
+              reject(
+                new Error(
+                  'H.264 worker codec probe failed: ' + (event.message || 'Unknown worker error.')
+                )
+              );
+            };
           });
           if (result?.error) throw new Error(result.error);
           return result === 'avc';
         } finally {
-          worker.terminate();
+          clearTimeout(timer);
+          worker?.terminate();
           URL.revokeObjectURL(url);
         }
       });

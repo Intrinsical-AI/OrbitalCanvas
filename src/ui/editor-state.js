@@ -53,6 +53,11 @@ export class EditorState {
     if (entry) {
       this.document = entry.state;
       this.apply();
+      // A historical target can equal the authored baseline while the live camera has moved.
+      for (const path of entry.paths) {
+        if (path.length === 2 && path[0] === 'camera' && ['yaw', 'pitch', 'zoom'].includes(path[1]))
+          this.camera[path[1]] = this.document.camera[path[1]];
+      }
     }
     return entry;
   }
